@@ -24,13 +24,14 @@ required tools. To use it:
 
 - [SSH into the router](https://openwrt.org/docs/guide-quick-start/sshadministration)
 
-- Ensure `bash` and `fping` are installed.
+- Ensure `bash`, `fping`, and `flock` are installed. `flock` is required for
+  crash-safe instance startup locking.
 
   On most OpenWrt installations, you can install them by running:
 
   ```bash
   opkg update
-  opkg install bash fping
+  opkg install bash fping flock
   ```
 
   If the `opkg` command is not found, you may need to use `apk`
@@ -38,7 +39,7 @@ required tools. To use it:
 
   ```bash
   apk update
-  apk add bash fping
+  apk add bash fping flock
   ```
 
 - Use the installer script by copying and pasting each of the commands
@@ -59,7 +60,7 @@ required tools. To use it:
 - [SSH into the router](https://github.com/RMerl/asuswrt-merlin.ng/wiki/SSHD)
 
 - Make sure these are installed: entware; coreutils-mktemp; jsonfilter; bash;
-  and iputils-ping or fping.
+  a package that provides the `flock` command; and iputils-ping or fping.
 
   - Firstly, if not already installed,
     [install entware](https://github.com/RMerl/asuswrt-merlin.ng/wiki/Entware);

@@ -32,7 +32,7 @@ main() {
 	set -eu
 
 	# Setup dependencies to check for
-	DEPENDENCIES="jsonfilter tar grep cmp mktemp bash"
+	DEPENDENCIES="jsonfilter tar grep cmp mktemp bash flock"
 
 	# Set up remote locations and branch
 	BRANCH="${CAKE_AUTORATE_BRANCH:-${2-master}}"
@@ -83,12 +83,35 @@ main() {
 		return 1
 	fi
 
-	# Check if an instance of cake-autorate is already running and exit if so
-	if [ -d /var/run/cake-autorate ]
+	# A flock backing file may legitimately keep this parent directory present
+	# after an instance exits. Block installation only for an actual recorded
+	# main process, never because a stale runtime directory merely exists.
+	running_instance=0
+	for proc_pids_path in /var/run/cake-autorate/*/proc_pids
+	do
+		[ -f "${proc_pids_path}" ] || continue
+		main_pid=$(grep '^main=' "${proc_pids_path}" | cut -d= -f2)
+		main_starttime=$(grep '^main_starttime=' "${proc_pids_path}" | cut -d= -f2)
+		case "${main_pid}" in
+			''|*[!0-9]*) ;;
+			*)
+				if [ -d "/proc/${main_pid}" ]
+				then
+					case "${main_starttime}" in
+						''|*[!0-9]*) running_instance=1 ;;
+						*)
+							current_starttime=$(awk '{ stat_line=$0; sub(/^[^)]*\\) /, "", stat_line); split(stat_line, fields, " "); print fields[20]; exit }' "/proc/${main_pid}/stat" 2>/dev/null)
+							[ "${current_starttime}" = "${main_starttime}" ] && running_instance=1
+							;;
+					esac
+				fi
+				;;
+		esac
+	done
+	if [ "${running_instance}" -eq 1 ]
 	then
 		printf "At least one instance of cake-autorate appears to be running - exiting\n" >&2
 		printf "If you want to install a new version, first stop any running instance of cake-autorate\n" >&2
-		printf "If you are sure that no instance of cake-autorate is running, delete the /var/run/cake-autorate directory\n" >&2
 		exit 1
 	fi
 

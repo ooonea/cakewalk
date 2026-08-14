@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2310,SC2311
 
 # lib.sh -- common functions for use by cake-autorate.sh
 #
@@ -11,10 +12,232 @@ then
     __set_e=1
 fi
 
+CAKE_AUTORATE_PROC_ROOT=${CAKE_AUTORATE_PROC_ROOT:-/proc}
+
 if [[ -z ${__sleep_fd:-} ]]
 then
 	exec {__sleep_fd}<> <(:)
 fi
+
+is_unsigned_integer()
+{
+	[[ ${1} =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+is_nonnegative_decimal()
+{
+	[[ ${1} =~ ^((0|[1-9][0-9]*)|((0|[1-9][0-9]*)?\.[0-9]+))$ ]]
+}
+
+timestamp_value_to_us()
+{
+	local timestamp=${1} seconds fraction
+
+	if [[ ${timestamp} == *.* ]]
+	then
+		seconds=${timestamp%%.*}
+		fraction=${timestamp#*.}
+	else
+		seconds=${timestamp}
+		fraction=
+	fi
+
+	is_unsigned_integer "${seconds}" || return 1
+	[[ -z ${fraction} || ${fraction} =~ ^[0-9]+$ ]] || return 1
+
+	fraction=${fraction:0:6}
+	while ((${#fraction} < 6))
+	do
+		fraction+="0"
+	done
+
+	printf '%s%s\n' "${seconds}" "${fraction}"
+}
+
+monotonic_time_us()
+{
+	local uptime _
+
+	if [[ -r ${CAKE_AUTORATE_PROC_ROOT}/uptime ]] && read -r uptime _ < "${CAKE_AUTORATE_PROC_ROOT}/uptime"
+	then
+		timestamp_value_to_us "${uptime}" && return
+	fi
+
+	timestamp_value_to_us "${EPOCHREALTIME}"
+}
+
+sleep_remaining_tick_time_monotonic()
+{
+	# sleeps until the end of the tick duration using the monotonic clock when
+	# /proc/uptime is available
+
+	# ${1} = t_start_us (microseconds)
+	# ${2} = tick_duration_us (microseconds)
+
+	local now_us
+
+	now_us=$(monotonic_time_us) || now_us=${EPOCHREALTIME/.}
+
+	((
+		sleep_duration_us=${1} + ${2} - now_us,
+		sleep_duration_us < 0 && (sleep_duration_us=0)
+	))
+
+	printf -v sleep_duration_s %.1f "${sleep_duration_us}e-6"
+	read -r -t "${sleep_duration_s}" -u "${__sleep_fd}" || :
+}
+
+bracketed_timestamp_to_us()
+{
+	local timestamp=${1}
+
+	[[ ${timestamp} == \[*\] ]] || return 1
+	timestamp=${timestamp:1:${#timestamp}-2}
+	timestamp_value_to_us "${timestamp}"
+}
+
+normalise_pinger_timestamp_us()
+{
+	local method=${1} timestamp=${2}
+
+	case ${method} in
+		irtt)
+			is_unsigned_integer "${timestamp}" || return 1
+			printf '%s\n' "${timestamp}"
+			;;
+		tsping)
+			timestamp_value_to_us "${timestamp}"
+			;;
+		fping|fping-ts|ping)
+			bracketed_timestamp_to_us "${timestamp}"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+pinger_timestamp_is_fresh()
+{
+	local timestamp_us=${1} now_us=${2} max_age_us=${3:-500000}
+
+	is_unsigned_integer "${timestamp_us}" &&
+		is_unsigned_integer "${now_us}" &&
+		is_unsigned_integer "${max_age_us}" || return 1
+
+	# All supported pingers timestamp locally. A future timestamp can otherwise
+	# suppress reflector health checks just as an old queued response can drive
+	# state, so accept only the bounded interval ending at the current sample.
+	(( now_us >= 10#${timestamp_us} && now_us - 10#${timestamp_us} <= max_age_us ))
+}
+
+valid_irtt_reply_fields()
+{
+	local -n fields=${1}
+
+	((${#fields[@]} == 5)) &&
+		is_unsigned_integer "${fields[0]}" &&
+		is_unsigned_integer "${fields[2]}" &&
+		is_unsigned_integer "${fields[3]}" &&
+		is_unsigned_integer "${fields[4]}"
+}
+
+valid_tsping_reply_fields()
+{
+	local -n fields=${1}
+
+	((${#fields[@]} == 10)) &&
+		is_nonnegative_decimal "${fields[8]}" &&
+		is_nonnegative_decimal "${fields[9]}"
+}
+
+valid_fping_reply_fields()
+{
+	local -n fields=${1}
+
+	((${#fields[@]} == 12)) &&
+		[[ ${fields[2]} == ":" && ${fields[3]} =~ ^\[(0|[1-9][0-9]*)\]$ && ${fields[5]} == "bytes" && ${fields[7]} == "ms" ]] &&
+		is_unsigned_integer "${fields[4]}" &&
+		is_nonnegative_decimal "${fields[6]}"
+}
+
+valid_fping_ts_reply_fields()
+{
+	local -n fields=${1}
+
+	((${#fields[@]} == 17)) &&
+		[[ ${fields[13]} == Originate=* && ${fields[14]} == Receive=* && ${fields[15]} == Transmit=* && ${fields[16]} == Localreceive=* ]] &&
+		is_unsigned_integer "${fields[13]#Originate=}" &&
+		is_unsigned_integer "${fields[14]#Receive=}" &&
+		is_unsigned_integer "${fields[15]#Transmit=}" &&
+		is_unsigned_integer "${fields[16]#Localreceive=}"
+}
+
+valid_ping_reply_fields()
+{
+	local -n fields=${1}
+
+	((${#fields[@]} == 9)) &&
+		[[ ${fields[2]} == "bytes" && ${fields[3]} == "from" && ${fields[5]} =~ ^icmp_seq=(0|[1-9][0-9]*)$ && ${fields[7]} == time=* && ${fields[8]} == "ms" ]] &&
+		is_unsigned_integer "${fields[1]}" &&
+		is_nonnegative_decimal "${fields[7]#time=}"
+}
+
+validate_bytes_path()
+{
+	local name=${1} path=${2}
+
+	if [[ -z ${path} ]]
+	then
+		log_msg "ERROR" "${name} cannot be empty. Exiting script."
+		exit 1
+	fi
+	if [[ ${path} != /* ]]
+	then
+		log_msg "ERROR" "${name} must be an absolute path: '${path}'. Exiting script."
+		exit 1
+	fi
+	if [[ ${path} == *$'\n'* || ${path} == *$'\r'* ]]
+	then
+		log_msg "ERROR" "${name} contains a newline. Exiting script."
+		exit 1
+	fi
+	if [[ -d ${path} ]]
+	then
+		log_msg "ERROR" "${name} points to a directory, not a byte-counter file: '${path}'. Exiting script."
+		exit 1
+	fi
+}
+
+read_bytes_counter()
+{
+	local path=${1} counter_value
+	local -n output_var=${2}
+
+	read -r counter_value < "${path}" 2>/dev/null || return 1
+	is_unsigned_integer "${counter_value}" || return 1
+	# shellcheck disable=SC2034  # nameref assignment updates the caller's variable
+	output_var=${counter_value}
+}
+
+get_process_start_time()
+{
+	local pid=${1}
+
+	[[ ${pid} =~ ^[0-9]+$ && -r ${CAKE_AUTORATE_PROC_ROOT}/${pid}/stat ]] || return 1
+	awk '
+		{
+			stat_line = $0
+			sub(/^[^)]*\) /, "", stat_line)
+			split(stat_line, fields, " ")
+			if (fields[20] ~ /^[0-9]+$/) {
+				print fields[20]
+				exit 0
+			}
+			exit 1
+		}
+	' "${CAKE_AUTORATE_PROC_ROOT}/${pid}/stat"
+}
 
 typeof() 
 {
@@ -42,16 +265,16 @@ str_type()
 
 	local -n str=${1}
 
-	if [[ "${str}" =~ ^[0-9]+$ ]]
+	if is_unsigned_integer "${str}"
 	then
 		printf "integer"
-	elif [[ "${str}" =~ ^[0-9]*\.[0-9]+$ ]]
+	elif is_nonnegative_decimal "${str}" && [[ ${str} == *.* ]]
 	then
 		printf "float"
-	elif [[ "${str}" =~ ^-[0-9]+$ ]]
+	elif [[ "${str}" =~ ^-(0|[1-9][0-9]*)$ ]]
 	then
 		printf "negative-integer"
-	elif [[ "${str}" =~ ^-[0-9]*\.[0-9]+$ ]]
+	elif [[ "${str}" =~ ^-((0|[1-9][0-9]*)?\.[0-9]+)$ ]]
 	then
 		printf "negative-float"
 	else
@@ -129,30 +352,27 @@ generate_run_token()
 {
 	local run_token
 
-	read -r run_token < /proc/sys/kernel/random/uuid 2>/dev/null || return 1
+	read -r run_token < "${CAKE_AUTORATE_PROC_ROOT}/sys/kernel/random/uuid" 2>/dev/null || return 1
 	[[ ${run_token} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
 
 	printf '%s\n' "${run_token}"
 }
 
-running_process_matches_run_token()
-{
-	local pid=${1} run_token=${2}
-
-	[[ ${pid} =~ ^[0-9]+$ && -n ${run_token} && -r /proc/${pid}/environ ]] || return 1
-	tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null | grep -Fxq "CAKE_AUTORATE_RUN_TOKEN=${run_token}"
-}
-
 get_running_main_pid_for_run_path()
 {
-	local run_path=${1} running_main_pid running_run_token
+	local run_path=${1} running_main_pid running_main_start_time current_start_time
 
 	[[ -f ${run_path}/proc_pids ]] || return 1
 	[[ -f ${run_path}/run_token ]] || return 1
 	running_main_pid=$(awk -F= '/^main=/ {print $2}' "${run_path}/proc_pids") || return 1
-	[[ ${running_main_pid} =~ ^[0-9]+$ && -d /proc/${running_main_pid} ]] || return 1
-	read -r running_run_token < "${run_path}/run_token" || return 1
-	running_process_matches_run_token "${running_main_pid}" "${running_run_token}" || return 1
+	[[ ${running_main_pid} =~ ^[0-9]+$ && -d ${CAKE_AUTORATE_PROC_ROOT}/${running_main_pid} ]] || return 1
+	running_main_start_time=$(awk -F= '/^main_starttime=/ {print $2}' "${run_path}/proc_pids") || return 1
+	if [[ -n ${running_main_start_time} ]]
+	then
+		[[ ${running_main_start_time} =~ ^[0-9]+$ ]] || return 1
+		current_start_time=$(get_process_start_time "${running_main_pid}") || return 1
+		[[ ${current_start_time} == "${running_main_start_time}" ]] || return 1
+	fi
 
 	printf '%s\n' "${running_main_pid}"
 }
@@ -166,8 +386,16 @@ terminate()
 	# and, finally, call wait on all processes to reap any zombie processes.
 
 	local pids=${1} timeout_ms=${2:-1000}
+	local wait_pids=() pid wait_pid
 
 	read -r -a pids <<< "${pids}"
+	((${#pids[@]})) || return
+
+	for pid in "${pids[@]}"
+	do
+		wait_pid=${pid#-}
+		[[ ${wait_pid} =~ ^[0-9]+$ ]] && wait_pids+=("${wait_pid}")
+	done
 
 	# `--` is required: for the irtt pinger method pids are negated pgids (set -m),
 	# and `kill -123` parses the leading dash as a signal spec ("invalid signal
@@ -181,11 +409,18 @@ terminate()
 		do
 			kill -0 "${pids[${process}]}" 2> /dev/null || unset "pids[${process}]"
 		done
-		[[ "${pids[*]}" ]] || return
+		if [[ -z "${pids[*]}" ]]
+		then
+			((${#wait_pids[@]})) && wait "${wait_pids[@]}" 2>/dev/null || :
+			return
+		fi
 		sleep_s 0.1
 	done
 
-	kill -KILL -- "${pids[@]}" 2> /dev/null
+	# A process can exit after the final kill -0 probe and before this fallback.
+	# That is a successful termination, not an errexit-worthy failure.
+	kill -KILL -- "${pids[@]}" 2> /dev/null || :
+	((${#wait_pids[@]})) && wait "${wait_pids[@]}" 2>/dev/null || :
 }
 
 if (( __set_e == 1 ))

@@ -48,6 +48,11 @@ log_file_path_override=""
 dl_if=ifb-wan # download interface
 ul_if=wan     # upload interface
 
+# Optional byte-counter overrides. Leave empty to derive the counters from
+# dl_if/ul_if below; if set, paths must be absolute procfs/sysfs-style files.
+rx_bytes_path=""
+tx_bytes_path=""
+
 # CAKE option strings for the generic-Linux sqm-setup.sh helper, which creates
 # the qdiscs that cake-autorate then adjusts. Declared here so they are valid
 # config keys (sqm-setup.sh reads these, or a per-instance override).

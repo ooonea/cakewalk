@@ -33,8 +33,12 @@ then
 fi
 
 cake_instance_pids=()
+supervisor_dir=
+supervisor_fifo=
+supervisor_fd=
 
-trap kill_cake_instances INT TERM EXIT
+trap 'kill_cake_instances; exit 0' INT TERM
+trap kill_cake_instances EXIT
 
 kill_cake_instances()
 {
@@ -47,11 +51,78 @@ kill_cake_instances()
 		kill "${cake_instance_pids[${cake_instance}]}" 2>/dev/null || true
 	done
 	wait
+	cleanup_supervisor
 }
+
+cleanup_supervisor()
+{
+	if [[ -n ${supervisor_fd:-} ]]
+	then
+		exec {supervisor_fd}>&-
+		unset supervisor_fd
+	fi
+	[[ -n ${supervisor_dir:-} && -d ${supervisor_dir} ]] && rm -rf "${supervisor_dir}"
+}
+
+wait_for_cake_instances()
+{
+	local supervisor_result exit_status
+
+	read -r -u "${supervisor_fd}" supervisor_result
+	exit_status=${supervisor_result##*:}
+	[[ ${exit_status} =~ ^[0-9]+$ ]] || exit_status=1
+
+	kill_cake_instances
+	exit "${exit_status}"
+}
+
+start_cake_instance()
+{
+	local cake_instance=${1} cake_instance_pid exit_status
+
+	(
+		trap 'kill "${cake_instance_pid}" 2>/dev/null || true; wait "${cake_instance_pid}" 2>/dev/null || true; exit 143' INT TERM
+
+		%%SCRIPT_PREFIX%%/cake-autorate.sh "${cake_instance}" &
+		cake_instance_pid=${!}
+		wait "${cake_instance_pid}"
+		exit_status=${?}
+		printf '%s:%s\n' "${cake_instance}" "${exit_status}" > "${supervisor_fifo}"
+		exit "${exit_status}"
+	) &
+	cake_instance_pids+=(${!})
+}
+
+setup_supervisor()
+{
+	supervisor_dir=$(mktemp -d "${TMPDIR:-/tmp}/cake-autorate-launcher.XXXXXX") || {
+		printf '%s\n' "cake-autorate: failed to create launcher supervisor directory" >&2
+		exit 1
+	}
+	supervisor_fifo="${supervisor_dir}/status"
+	mkfifo "${supervisor_fifo}" || {
+		printf '%s\n' "cake-autorate: failed to create launcher supervisor FIFO" >&2
+		rm -rf "${supervisor_dir}"
+		exit 1
+	}
+
+	exec {supervisor_fd}<>"${supervisor_fifo}"
+}
+
+assert_launcher_bash_support()
+{
+	if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3)))
+	then
+		printf '%s\n' "cake-autorate: launcher requires bash >= 4.3" >&2
+		exit 1
+	fi
+}
+
+assert_launcher_bash_support
+setup_supervisor
 
 for cake_instance in "${cake_instances[@]}"
 do
-	%%SCRIPT_PREFIX%%/cake-autorate.sh "${cake_instance}" &
-	cake_instance_pids+=(${!})
+	start_cake_instance "${cake_instance}"
 done
-wait
+wait_for_cake_instances

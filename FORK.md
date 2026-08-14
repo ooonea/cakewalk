@@ -51,6 +51,16 @@ cake-autorate then adjusts, and reads its CAKE option strings from the config.
 Undeclared keys make config validation reject the instance file, and the daemon
 exits without explaining why.
 
+**Harden controller state and process lifecycle.** The homelab deployment also
+carries the audited runtime fixes on `local/runtime-safety-audit`: a failed
+`tc qdisc change` no longer advances the controller's internal rate, fatal
+errors remain visible to the service manager, stale or malformed pinger samples
+cannot mutate delay state, byte-rate calculations use actual monotonic elapsed
+time, and process metadata is published atomically with PID start times. The
+launcher now fails fast and reaps all children. Instance startup is serialized
+with a kernel `flock`, which auto-releases across crashes and avoids stale-lock
+recovery races; `flock` is therefore an explicit runtime dependency.
+
 ## Contributing back
 
 Anything meant for upstream is branched from `master`, never from `homelab`, so

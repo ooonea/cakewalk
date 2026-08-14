@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2310
 
 # cake-autorate automatically adjusts CAKE bandwidth(s)
 # in dependence on: a) receive and transmit transfer rates; and b) latency
@@ -15,6 +16,18 @@
 # Contributors:  rany2; moeller0; richb-hanover
 
 cake_autorate_version="3.3.0-PRERELEASE"
+
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3)))
+then
+	printf '%s\n' "ERROR: cake-autorate requires bash >= 4.3." >&2
+	exit 1
+fi
+
+if ! command -v flock >/dev/null 2>&1
+then
+	printf '%s\n' "ERROR: cake-autorate requires the flock command for safe instance startup locking." >&2
+	exit 1
+fi
 
 ## cake-autorate uses multiple asynchronous processes including:
 ## main - main process
@@ -36,6 +49,7 @@ exec {main_fd}<> <(:)
 # process pids are stored below in the form
 # proc_pids['process_identifier']=${!}
 declare -A proc_pids
+declare -A pinger_pids
 
 # Bash correctness options
 ## Disable globbing (expansion of *).
@@ -94,18 +108,29 @@ fi
 # get valid config overrides
 mapfile -t valid_config_entries < <(grep -E '^[^(#| )].*=' "${SCRIPT_PREFIX}/defaults.sh" | sed -e 's/[\t ]*\#.*//g' -e 's/=.*//g')
 
-trap cleanup_and_killall INT TERM EXIT
+trap 'cleanup_and_killall 0' INT
+trap 'cleanup_and_killall 0' TERM
+trap 'cleanup_and_killall "$?"' EXIT
 
 cleanup_and_killall()
 {	
+	local exit_status=${1:-0} config_path_for_log=${config_path:-unknown}
+
 	# Do not fail on error for this critical cleanup code
 	set +e
+	set +u
 
 	trap : INT TERM EXIT
+
+	if [[ -n ${run_path:-} && -f ${run_path}/fatal_error ]]
+	then
+		read -r exit_status < "${run_path}/fatal_error" 2>/dev/null || exit_status=1
+		[[ ${exit_status} =~ ^[0-9]+$ ]] || exit_status=1
+	fi
 	
 	log_msg "DEBUG" "Starting: ${FUNCNAME[0]} with PID: ${BASHPID}"
 	
-	log_msg "INFO" "Stopping cake-autorate with PID: ${BASHPID} and config: ${config_path}"
+	log_msg "INFO" "Stopping cake-autorate with PID: ${BASHPID} and config: ${config_path_for_log}"
 	
 	log_msg "INFO" "Killing all background processes and cleaning up temporary files."
 
@@ -116,8 +141,11 @@ cleanup_and_killall()
 	((terminate_maintain_log_file_timeout_ms=log_file_buffer_timeout_ms+500))
 	terminate "${proc_pids['maintain_log_file']:-}" "${terminate_maintain_log_file_timeout_ms}"
 
-	[[ -d ${run_path} ]] && rm -r "${run_path}"
-	rmdir /var/run/cake-autorate 2>/dev/null
+	[[ -n ${run_path:-} && -d ${run_path} ]] && rm -r "${run_path}"
+	[[ -n ${startup_lock_fd:-} ]] && release_startup_lock
+	# The flock backing file intentionally remains under run_parent_path. It is
+	# not lock state: the kernel releases the advisory lock automatically when
+	# its FD closes or the owner dies, including SIGKILL.
 
 	# give some time for processes to gracefully exit
 	sleep_s 1
@@ -149,10 +177,23 @@ cleanup_and_killall()
 		terminate "${intercept_stderr_pid}"
 	fi
 
-	log_msg "SYSLOG" "Stopped cake-autorate with PID: ${BASHPID} and config: ${config_path}"
+	log_msg "SYSLOG" "Stopped cake-autorate with PID: ${BASHPID} and config: ${config_path_for_log}"
 
 	trap - INT TERM EXIT
-	exit
+	exit "${exit_status}"
+}
+
+request_fatal_exit()
+{
+	local exit_status=${1:-1}
+
+	if [[ -n ${run_path:-} && -d ${run_path} ]]
+	then
+		printf '%s\n' "${exit_status}" > "${run_path}/fatal_error" 2>/dev/null || :
+	fi
+
+	kill -TERM "$$" 2>/dev/null || :
+	exit "${exit_status}"
 }
 
 log_msg()
@@ -445,12 +486,81 @@ export_proc_pids()
 {
 	log_msg "DEBUG" "Starting: ${FUNCNAME[0]} with PID: ${BASHPID}"
 
-	printf '%s\n' "${CAKE_AUTORATE_RUN_TOKEN}" > "${run_path}/run_token"
-	: > "${run_path}/proc_pids"
+	local run_token_tmp proc_pids_tmp proc_start_time
+
+	run_token_tmp="${run_path}/run_token.tmp.${BASHPID}"
+	proc_pids_tmp="${run_path}/proc_pids.tmp.${BASHPID}"
+
+	printf '%s\n' "${CAKE_AUTORATE_RUN_TOKEN}" > "${run_token_tmp}" || return 1
+	mv -f "${run_token_tmp}" "${run_path}/run_token" || return 1
+
+	: > "${proc_pids_tmp}" || return 1
 	for proc_pid in "${!proc_pids[@]}"
 	do
-		printf "%s=%s\n" "${proc_pid}" "${proc_pids[${proc_pid}]}" >> "${run_path}/proc_pids"
+		printf "%s=%s\n" "${proc_pid}" "${proc_pids[${proc_pid}]}" >> "${proc_pids_tmp}" || return 1
+		if [[ ${proc_pids[${proc_pid}]} =~ ^[0-9]+$ ]] && proc_start_time=$(get_process_start_time "${proc_pids[${proc_pid}]}") 2>/dev/null
+		then
+			printf "%s_starttime=%s\n" "${proc_pid}" "${proc_start_time}" >> "${proc_pids_tmp}" || return 1
+		fi
 	done
+	mv -f "${proc_pids_tmp}" "${run_path}/proc_pids" || return 1
+}
+
+acquire_startup_lock()
+{
+	startup_lock_path="${run_path}.startup.lock"
+
+	if [[ -L ${startup_lock_path} || -d ${startup_lock_path} ]]
+	then
+		log_msg "ERROR" "Startup lock path '${startup_lock_path}' is not a regular file. Refusing unsafe startup."
+		exit 1
+	fi
+
+	exec {startup_lock_fd}>"${startup_lock_path}" || {
+		log_msg "ERROR" "Failed to open startup lock '${startup_lock_path}'. Exiting script."
+		exit 1
+	}
+
+	if ! flock -n "${startup_lock_fd}"
+	then
+		exec {startup_lock_fd}>&-
+		unset startup_lock_fd
+		log_msg "ERROR" "Startup lock '${startup_lock_path}' is held by another cake-autorate startup. Exiting script."
+		exit 1
+	fi
+}
+
+release_startup_lock()
+{
+	[[ -n ${startup_lock_fd:-} ]] || return
+	exec {startup_lock_fd}>&-
+	unset startup_lock_fd
+	unset startup_lock_path
+}
+
+prepare_run_path()
+{
+	local running_main_pid
+
+	( umask 077 && mkdir -p "${run_parent_path}" ) || { log_msg "ERROR" "Failed to create run parent path '${run_parent_path}'. Exiting script."; exit 1; }
+
+	acquire_startup_lock
+
+	if [[ -d ${run_path} ]]
+	then
+		if running_main_pid=$(get_running_main_pid_for_run_path "${run_path}")
+		then
+			log_msg "ERROR" "${run_path} already exists and an instance appears to be running with main process pid ${running_main_pid}. Exiting script."
+			trap - INT TERM EXIT
+			release_startup_lock
+			exit 1
+		fi
+
+		log_msg "DEBUG" "${run_path} already exists but no conflicting instance is running. Removing and recreating."
+		rm -r "${run_path}" || { log_msg "ERROR" "Failed to remove stale run path '${run_path}'. Exiting script."; exit 1; }
+	fi
+
+	( umask 077 && mkdir "${run_path}" ) || { log_msg "ERROR" "Failed to create run path '${run_path}'. Exiting script."; exit 1; }
 }
 
 monitor_achieved_rates()
@@ -466,38 +576,42 @@ monitor_achieved_rates()
 
 	compensated_monitor_achieved_rates_interval_us=${monitor_achieved_rates_interval_us}
 
-	{ read -r prev_rx_bytes < "${rx_bytes_path}"; } 2> /dev/null || prev_rx_bytes=0
-	{ read -r prev_tx_bytes < "${tx_bytes_path}"; } 2> /dev/null || prev_tx_bytes=0
+	read_bytes_counter "${rx_bytes_path}" prev_rx_bytes || prev_rx_bytes=0
+	read_bytes_counter "${tx_bytes_path}" prev_tx_bytes || prev_tx_bytes=0
 
-	sleep_duration_s=0 t_start_us=0
+	sleep_duration_s=0 t_start_us=0 prev_t_start_us=0 elapsed_monitor_achieved_rates_interval_us=0
+	prev_t_start_us=$(monotonic_time_us) || prev_t_start_us=${EPOCHREALTIME/.}
 
 	declare -A achieved_rate_kbps load_percent
 
 	while :
 	do
-		t_start_us=${EPOCHREALTIME/.}
+		t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
+		(( elapsed_monitor_achieved_rates_interval_us = t_start_us - prev_t_start_us ))
+		(( elapsed_monitor_achieved_rates_interval_us > 0 )) || elapsed_monitor_achieved_rates_interval_us=${compensated_monitor_achieved_rates_interval_us}
 
 		# read in rx/tx bytes file, and if this fails then set to prev_bytes
 		# this addresses interfaces going down and back up
-		{ read -r rx_bytes < "${rx_bytes_path}"; } 2> /dev/null || rx_bytes=${prev_rx_bytes}
-		{ read -r tx_bytes < "${tx_bytes_path}"; } 2> /dev/null || tx_bytes=${prev_tx_bytes}
+		read_bytes_counter "${rx_bytes_path}" rx_bytes || rx_bytes=${prev_rx_bytes}
+		read_bytes_counter "${tx_bytes_path}" tx_bytes || tx_bytes=${prev_tx_bytes}
 
 		((
-			achieved_rate_kbps[dl] = 8000*(rx_bytes - prev_rx_bytes) / compensated_monitor_achieved_rates_interval_us,
-			achieved_rate_kbps[ul] = 8000*(tx_bytes - prev_tx_bytes) / compensated_monitor_achieved_rates_interval_us,
+			achieved_rate_kbps[dl] = 8000*(rx_bytes - prev_rx_bytes) / elapsed_monitor_achieved_rates_interval_us,
+			achieved_rate_kbps[ul] = 8000*(tx_bytes - prev_tx_bytes) / elapsed_monitor_achieved_rates_interval_us,
 
 			achieved_rate_kbps[dl]<0 && (achieved_rate_kbps[dl]=0),
 			achieved_rate_kbps[ul]<0 && (achieved_rate_kbps[ul]=0),
 
 			prev_rx_bytes=rx_bytes,
 			prev_tx_bytes=tx_bytes,
+			prev_t_start_us=t_start_us,
 
 			compensated_monitor_achieved_rates_interval_us = monitor_achieved_rates_interval_us>(10*max_wire_packet_rtt_us) ? monitor_achieved_rates_interval_us : 10*max_wire_packet_rtt_us
 		))
 
 		printf "SARS %s %s\n" "${achieved_rate_kbps[dl]}" "${achieved_rate_kbps[ul]}" >&${main_fd}
 
-		sleep_remaining_tick_time "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}"
+		sleep_remaining_tick_time_monotonic "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}"
 	done
 }
 
@@ -593,17 +707,17 @@ start_pinger()
 			;;
 		ping)
 			sleep_until_next_pinger_time_slot "${pinger}"
-			${ping_prefix_string} ping ${ping_extra_args} -D -i "${reflector_ping_interval_s}" "${reflectors[pinger]}" 2> /dev/null >&"${main_fd}" &
+			${ping_prefix_string} ping ${ping_extra_args} -n -D -i "${reflector_ping_interval_s}" "${reflectors[pinger]}" 2> /dev/null >&"${main_fd}" &
 			pinger_pids[pinger]=${!}
 			proc_pids["ping_${pinger}_pinger"]=${pinger_pids[pinger]}
 			;;
 		*)
 			log_msg "ERROR" "Unknown pinger method: ${pinger_method}"
-			kill $$ 2>/dev/null
+			exit 1
 			;;
 	esac
 
-	export_proc_pids
+	export_proc_pids || { log_msg "ERROR" "Failed to export process metadata. Exiting script."; exit 1; }
 }
 
 start_pingers()
@@ -624,7 +738,7 @@ start_pingers()
 			;;
 		*)
 			log_msg "ERROR" "Unknown pinger method: ${pinger_method}"
-			kill $$ 2>/dev/null
+			exit 1
 			;;
 	esac
 	pingers_active=1
@@ -681,7 +795,7 @@ stop_pingers()
 			;;
 		*)
 			log_msg "ERROR" "Unknown pinger method: ${pinger_method}"
-			kill $$ 2>/dev/null
+			exit 1
 			;;
 	esac
 	pingers_active=0
@@ -750,38 +864,47 @@ set_shaper_rate()
 {
 	# Fire up tc and update max_wire_packet_compensation if there are rates to change for the given direction
 
-	local direction=${1} # 'dl' or 'ul'
+	local direction=${1} tc_status=0 # 'dl' or 'ul'
 
-	(( shaper_rate_kbps[${direction}] != last_shaper_rate_kbps[${direction}] )) || return
+	(( shaper_rate_kbps[${direction}] != last_shaper_rate_kbps[${direction}] )) || return 0
 
-	((output_cake_changes)) && log_msg "SHAPER" "tc qdisc change root dev ${interface[${direction}]} cake bandwidth ${shaper_rate_kbps[${direction}]}Kbit"
+	((output_cake_changes)) && log_msg "SHAPER" "tc qdisc change root dev ${interface[${direction}]} ${qdisc_kind[${direction}]} bandwidth ${shaper_rate_kbps[${direction}]}Kbit"
 
 	if ((adjust_shaper_rate[${direction}]))
 	then
-		tc qdisc change root dev "${interface[${direction}]}" cake bandwidth "${shaper_rate_kbps[${direction}]}Kbit" 2> /dev/null
+		tc qdisc change root dev "${interface[${direction}]}" "${qdisc_kind[${direction}]}" bandwidth "${shaper_rate_kbps[${direction}]}Kbit" 2> /dev/null || tc_status=${?}
+		if ((tc_status))
+		then
+			log_msg "ERROR" "tc failed with status ${tc_status} while setting ${direction} shaper on ${interface[${direction}]} (${qdisc_kind[${direction}]}) to ${shaper_rate_kbps[${direction}]}Kbit."
+			get_root_qdisc_kind "${direction}" 2>/dev/null || :
+		fi
 	else
 		((output_cake_changes)) && log_msg "DEBUG" "adjust_${direction}_shaper_rate set to 0 in config, so skipping the corresponding tc qdisc change call."
 	fi
 
-	# Compensate for delays imposed by active traffic shaper
-	# This will serve to increase the delay thr at rates below around 12Mbit/s
-	((
-		dl_compensation_us=(1000*dl_max_wire_packet_size_bits)/shaper_rate_kbps[dl],
-		ul_compensation_us=(1000*ul_max_wire_packet_size_bits)/shaper_rate_kbps[ul],
+	if ((tc_status == 0))
+	then
+		# Compensate only for rates known to be installed. On a failed tc
+		# change, retaining the previous compensation keeps the control loop
+		# consistent with the qdisc and leaves this rate pending for retry.
+		((
+			dl_compensation_us=(1000*dl_max_wire_packet_size_bits)/shaper_rate_kbps[dl],
+			ul_compensation_us=(1000*ul_max_wire_packet_size_bits)/shaper_rate_kbps[ul],
 
-		compensated_avg_owd_delta_max_adjust_up_thr_us[dl]=dl_avg_owd_delta_max_adjust_up_thr_us + dl_compensation_us,
-		compensated_avg_owd_delta_max_adjust_up_thr_us[ul]=ul_avg_owd_delta_max_adjust_up_thr_us + ul_compensation_us,
+			compensated_avg_owd_delta_max_adjust_up_thr_us[dl]=dl_avg_owd_delta_max_adjust_up_thr_us + dl_compensation_us,
+			compensated_avg_owd_delta_max_adjust_up_thr_us[ul]=ul_avg_owd_delta_max_adjust_up_thr_us + ul_compensation_us,
 
-		compensated_owd_delta_delay_thr_us[dl]=dl_owd_delta_delay_thr_us + dl_compensation_us,
-		compensated_owd_delta_delay_thr_us[ul]=ul_owd_delta_delay_thr_us + ul_compensation_us,
+			compensated_owd_delta_delay_thr_us[dl]=dl_owd_delta_delay_thr_us + dl_compensation_us,
+			compensated_owd_delta_delay_thr_us[ul]=ul_owd_delta_delay_thr_us + ul_compensation_us,
 
-		compensated_avg_owd_delta_max_adjust_down_thr_us[dl]=dl_avg_owd_delta_max_adjust_down_thr_us + dl_compensation_us,
-		compensated_avg_owd_delta_max_adjust_down_thr_us[ul]=ul_avg_owd_delta_max_adjust_down_thr_us + ul_compensation_us,
+			compensated_avg_owd_delta_max_adjust_down_thr_us[dl]=dl_avg_owd_delta_max_adjust_down_thr_us + dl_compensation_us,
+			compensated_avg_owd_delta_max_adjust_down_thr_us[ul]=ul_avg_owd_delta_max_adjust_down_thr_us + ul_compensation_us,
 
-		max_wire_packet_rtt_us=(1000*dl_max_wire_packet_size_bits)/shaper_rate_kbps[dl] + (1000*ul_max_wire_packet_size_bits)/shaper_rate_kbps[ul],
-
-		last_shaper_rate_kbps[${direction}]=${shaper_rate_kbps[${direction}]}
-	))
+			max_wire_packet_rtt_us=(1000*dl_max_wire_packet_size_bits)/shaper_rate_kbps[dl] + (1000*ul_max_wire_packet_size_bits)/shaper_rate_kbps[ul],
+			last_shaper_rate_kbps[${direction}]=${shaper_rate_kbps[${direction}]}
+		))
+	fi
+	return "${tc_status}"
 }
 
 set_min_shaper_rates()
@@ -795,6 +918,27 @@ set_min_shaper_rates()
 	shaper_rate_kbps[dl]=${min_shaper_rate_kbps[dl]} shaper_rate_kbps[ul]=${min_shaper_rate_kbps[ul]}
 	set_shaper_rate "dl"
 	set_shaper_rate "ul"
+}
+
+get_root_qdisc_kind()
+{
+	local direction=${1} qdisc_output detected_qdisc_kind
+
+	qdisc_output=$(tc qdisc show root dev "${interface[${direction}]:?}" 2>/dev/null) || {
+		log_msg "ERROR" "Failed to inspect root qdisc on ${interface[${direction}]}."
+		return 1
+	}
+
+	if [[ ${qdisc_output} =~ ^qdisc[[:space:]]+(cake_mq|cake)[[:space:]] ]]
+	then
+		detected_qdisc_kind=${BASH_REMATCH[1]}
+		qdisc_kind[${direction}]=${detected_qdisc_kind}
+		log_msg "DEBUG" "Detected root qdisc '${qdisc_kind[${direction}]}' on ${interface[${direction}]} for ${direction}."
+		return 0
+	fi
+
+	log_msg "ERROR" "Root qdisc on ${interface[${direction}]} is not cake or cake_mq: ${qdisc_output}."
+	return 1
 }
 
 get_max_wire_packet_size_bits()
@@ -844,7 +988,7 @@ change_state_main()
 		*)
 
 			log_msg "ERROR" "Received unrecognized main state change request: ${main_next_state}. Exiting now."
-			kill $$ 2>/dev/null
+			exit 1
 			;;
 	esac
 }
@@ -857,7 +1001,7 @@ intercept_stderr()
 	while read -r error
 	do
 		log_msg "ERROR" "${error}"
-		kill $$ 2>/dev/null
+		request_fatal_exit 1
 	done
 }
 
@@ -917,7 +1061,8 @@ log_file_path=/var/log/cake-autorate.log
 
 # *** WARNING: take great care if attempting to alter the run_path! ***
 # *** cake-autorate issues mkdir -p ${run_path} and rm -r ${run_path} on exit. ***
-run_path=/var/run/cake-autorate/
+run_parent_path=/var/run/cake-autorate
+run_path=${run_parent_path}
 
 # cake-autorate first argument is config file path
 if [[ -n ${1-} ]]
@@ -981,7 +1126,7 @@ unset valid_config_entries user_config config_error_count key
 
 if [[ ${config_path} =~ config\.(.*)\.sh ]]
 then
-	instance_id=${BASH_REMATCH[1]} run_path="/var/run/cake-autorate/${instance_id}"
+	instance_id=${BASH_REMATCH[1]} run_path="${run_parent_path}/${instance_id}"
 else
 	log_msg "ERROR" "Instance identifier 'X' set by config.X.sh cannot be empty. Exiting now."
 	exit 1
@@ -1007,26 +1152,17 @@ else
 	log_file_path="/var/log/cake-autorate${instance_id:+.${instance_id}}.log"
 fi
 
-# ${run_path}/ is used to store temporary files
-# it should not exist on startup so if it does exit, else create the directory.
-# This must run BEFORE rotate_log_file: a redundant start of an already-running
-# instance has to exit *without* rotating (truncating) the log file the running
-# instance is still writing to, so the conflicting-instance check comes first.
-if [[ -d ${run_path} ]]
-then
-	if running_main_pid=$(get_running_main_pid_for_run_path "${run_path}")
-	then
-		log_msg "ERROR" "${run_path} already exists and an instance appears to be running with main process pid ${running_main_pid}. Exiting script."
-		trap - INT TERM EXIT
-		exit 1
-	else
-		log_msg "DEBUG" "${run_path} already exists but no conflicting instance is running. Removing and recreating."
-		rm -r "${run_path}"
-		( umask 077 && mkdir -p "${run_path}" )
-	fi
-else
-	( umask 077 && mkdir -p "${run_path}" )
-fi
+# ${run_path}/ is used to store temporary files. Prepare it before rotating the
+# log so a redundant start of an already-running instance exits without
+# truncating the live instance's log file.
+prepare_run_path
+
+# Publish main atomically while the kernel lock is held, then close the FD
+# before process substitution or any worker can inherit it. The PID starttime
+# stored by export_proc_pids protects stale run-path cleanup from PID reuse.
+proc_pids['main']=${BASHPID}
+export_proc_pids || { log_msg "ERROR" "Failed to export initial process metadata. Exiting script."; exit 1; }
+release_startup_lock
 
 rotate_log_file
 
@@ -1037,8 +1173,6 @@ exec {original_stderr_fd}>&2 2> >(intercept_stderr)
 proc_pids['intercept_stderr']=${!}
 
 log_msg "SYSLOG" "Starting cake-autorate with PID: ${BASHPID} and config: ${config_path}"
-
-proc_pids['main']=${BASHPID}
 
 log_msg "DEBUG" "Local list of reflectors contains ${#reflectors[*]} entries."
 
@@ -1196,6 +1330,9 @@ then
 	esac
 fi
 
+validate_bytes_path "rx_bytes_path" "${rx_bytes_path}"
+validate_bytes_path "tx_bytes_path" "${tx_bytes_path}"
+
 if ((debug))
 then
 	log_msg "DEBUG" "CAKE-autorate version: ${cake_autorate_version}"
@@ -1271,6 +1408,7 @@ base_shaper_rate_kbps \
 min_shaper_rate_kbps \
 max_shaper_rate_kbps \
 interface \
+qdisc_kind \
 adjust_shaper_rate \
 avg_owd_delta_us \
 avg_owd_delta_max_adjust_up_thr_us \
@@ -1292,6 +1430,7 @@ achieved_rate_kbps[dl]=0 achieved_rate_kbps[ul]=0 \
 achieved_rate_updated[dl]=0 achieved_rate_updated[ul]=0 \
 last_shaper_rate_kbps[dl]=0 last_shaper_rate_kbps[ul]=0 \
 interface[dl]=${dl_if} interface[ul]=${ul_if} \
+qdisc_kind[dl]=cake qdisc_kind[ul]=cake \
 adjust_shaper_rate[dl]=${adjust_dl_shaper_rate} adjust_shaper_rate[ul]=${adjust_ul_shaper_rate} \
 dl_max_wire_packet_size_bits=0 ul_max_wire_packet_size_bits=0
 
@@ -1317,14 +1456,23 @@ fi
 get_max_wire_packet_size_bits "${dl_if}" dl_max_wire_packet_size_bits
 get_max_wire_packet_size_bits "${ul_if}" ul_max_wire_packet_size_bits
 
+if ((adjust_shaper_rate[dl]))
+then
+	get_root_qdisc_kind "dl" || exit 1
+fi
+if ((adjust_shaper_rate[ul]))
+then
+	get_root_qdisc_kind "ul" || exit 1
+fi
+
 avg_owd_delta_us[dl]=0 avg_owd_delta_us[ul]=0
 
 # shellcheck disable=SC2034
 avg_owd_delta_max_adjust_up_thr_us[dl]=${dl_avg_owd_delta_max_adjust_up_thr_us} avg_owd_delta_max_adjust_up_thr_us[ul]=${ul_avg_owd_delta_max_adjust_up_thr_us} \
 avg_owd_delta_max_adjust_down_thr_us[dl]=${dl_avg_owd_delta_max_adjust_down_thr_us} avg_owd_delta_max_adjust_down_thr_us[ul]=${ul_avg_owd_delta_max_adjust_down_thr_us}
 
-set_shaper_rate "dl"
-set_shaper_rate "ul"
+set_shaper_rate "dl" || { log_msg "ERROR" "Failed to set the initial download shaper rate. Exiting script."; exit 1; }
+set_shaper_rate "ul" || { log_msg "ERROR" "Failed to set the initial upload shaper rate. Exiting script."; exit 1; }
 
 dl_rate_load_condition="idle" ul_rate_load_condition="idle"
 
@@ -1367,7 +1515,7 @@ sustained_connection_idle=0 reflector_offences_idx=0 pingers_active=0
 monitor_achieved_rates "${rx_bytes_path}" "${tx_bytes_path}" "${monitor_achieved_rates_interval_us}" &
 proc_pids['monitor_achieved_rates']=${!}
 
-export_proc_pids
+export_proc_pids || { log_msg "ERROR" "Failed to export process metadata. Exiting script."; exit 1; }
 
 ((log_to_file)) && generate_log_file_scripts
 
@@ -1452,52 +1600,61 @@ do
 			case "${pinger_method}" in
 
 				irtt)
-					if ((${#command[@]} == 5))
+					if valid_irtt_reply_fields command
 					then
 						timestamp=${command[0]} reflector=${command[1]} seq=${command[2]} dl_owd_us=${command[3]} ul_owd_us=${command[4]} reflector_response=1
 					fi
 					;;
 				tsping)
-					if ((${#command[@]} == 10))
+					if valid_tsping_reply_fields command
 					then
 						timestamp=${command[0]} reflector=${command[1]} seq=${command[2]} dl_owd_ms=${command[8]} ul_owd_ms=${command[9]} reflector_response=1
 					fi
 					;;
 				fping)
-					# fping reports a negative RTT when the clock steps backwards
-					# mid-ping: it prints such a value rather than clamping it, and
-					# 10#${rtt_us//.} cannot represent a negative, so the arithmetic
-					# error kills the main loop. Reject any RTT token carrying a
-					# character outside [0-9.] — a glob class check, not a regex,
-					# since [[ =~ ]] recompiles the ERE on every sample.
-					# The ping arm needs no equivalent: iputils clamps a backward
-					# step to zero instead of reporting it.
-					if ((${#command[@]} == 12)) && [[ ${command[6]} != *[!0-9.]* ]]
+					if valid_fping_reply_fields command
 					then
 						timestamp=${command[0]} reflector=${command[1]} seq=${command[3]} rtt_ms=${command[6]} reflector_response=1
 					fi
 					;;
 				fping-ts)
-					if ((${#command[@]} == 17))
+					if valid_fping_ts_reply_fields command
 					then
 						timestamp=${command[0]} reflector=${command[1]} seq=${command[3]} originate=${command[13]#Originate=}000 received=${command[14]#Receive=}000 transmit=${command[15]#Transmit=}000 finished=${command[16]#Localreceive=}000 reflector_response=1
 					fi
 					;;
 				ping)
-					if ((${#command[@]} == 9))
+					if valid_ping_reply_fields command
 					then
-						timestamp=${command[0]} reflector=${command[4]} seq=${command[5]} rtt_ms=${command[7]} reflector_response=1
+						timestamp=${command[0]} reflector=${command[4]} seq=${command[5]} rtt_ms=${command[7]#time=} reflector_response=1
 					fi
 					;;
 				*)
 					log_msg "ERROR" "Unknown pinger method: ${pinger_method}"
-					kill $$ 2>/dev/null
+					exit 1
 				;;
 			esac
 			;;
 	esac
 
 	t_start_us=${EPOCHREALTIME/.}
+
+	if ((reflector_response))
+	then
+		if ! timestamp_us=$(normalise_pinger_timestamp_us "${pinger_method}" "${timestamp}")
+		then
+			log_msg "DEBUG" "processed response from [${reflector}] with invalid timestamp: ${timestamp}. Skipping."
+			continue
+		fi
+
+		if ! pinger_timestamp_is_fresh "${timestamp_us}" "${t_start_us}"
+		then
+			log_msg "DEBUG" "processed response from [${reflector}] with a stale or future timestamp: ${timestamp}. Skipping."
+			continue
+		fi
+
+		last_timestamp_reflectors_us[${reflector}]=${timestamp_us} reflectors_last_timestamp_us=${timestamp_us}
+	fi
 
 	case ${main_state} in
 
@@ -1546,12 +1703,10 @@ do
 								ul_owd_delta_ewmas_us[${reflector}]=(alpha_delta_ewma*ul_owd_delta_us+(1000000-alpha_delta_ewma)*ul_owd_delta_ewmas_us[${reflector}])/1000000
 							))
 						fi
-						
-						timestamp_us=${timestamp}
-						
 						;;
 					tsping)
-						dl_owd_us=${dl_owd_ms}000 ul_owd_us=${ul_owd_ms}000
+						printf -v dl_owd_us %.0f "${dl_owd_ms}e3"
+						printf -v ul_owd_us %.0f "${ul_owd_ms}e3"
 
 						((
 							dl_owd_delta_us=dl_owd_us - dl_owd_baselines_us[${reflector}],
@@ -1584,8 +1739,6 @@ do
 							))
 						fi
 
-						timestamp_us=${timestamp//[.]}
-
 						;;
 					fping)
 						seq=${seq#[} seq=${seq%]}
@@ -1610,9 +1763,6 @@ do
 								ul_owd_delta_ewmas_us[${reflector}]=dl_owd_delta_ewmas_us[${reflector}]
 							))
 						fi
-
-						timestamp_us=${timestamp#[} timestamp_us=${timestamp_us%]}
-						timestamp_us=${timestamp_us//.}0
 
 						;;
 
@@ -1651,9 +1801,6 @@ do
 							))
 						fi
 
-						timestamp_us=${timestamp#[} timestamp_us=${timestamp_us%]}
-						timestamp_us=${timestamp_us//.}0
-
 						;;
 					ping)
 						# iputils ping -D prints "from <addr>:" -- strip only the trailing
@@ -1685,23 +1832,12 @@ do
 							))
 						fi
 
-						timestamp_us=${timestamp#[} timestamp_us=${timestamp_us%]}
-						timestamp_us=${timestamp_us//.}
-
 						;;
 					*)
 						log_msg "ERROR" "Unknown pinger method: ${pinger_method}"
 						exit 1
 						;;
 				esac
-
-				last_timestamp_reflectors_us[${reflector}]=${timestamp_us} reflectors_last_timestamp_us=${timestamp_us}
-
-				if (( (t_start_us - 10#${reflectors_last_timestamp_us})>500000 ))
-				then
-					log_msg "DEBUG" "processed response from [${reflector}] that is > 500ms old. Skipping."
-					continue
-				fi
 
 				# Keep track of delays across detection window, detect any bufferbloat and determine load percentages
 				((
@@ -1816,7 +1952,7 @@ do
 							;;
 						*)
 							log_msg "ERROR" "unknown load condition: ${load_condition[${direction}]}"
-							kill $$ 2>/dev/null
+							exit 1
 							;;
 					esac
 				done
@@ -1929,7 +2065,7 @@ do
 				else
 					change_state_main "STALL"
 
-					t_connection_stall_time_us=${t_start_us} global_ping_response_timeout=0
+					t_last_pinger_restart_us=${t_start_us}
 				fi
 
 			fi
@@ -2077,9 +2213,9 @@ do
 				change_state_main "RUNNING"
 			fi
 
-			if (( global_ping_response_timeout==0 && t_start_us > (t_connection_stall_time_us + global_ping_response_timeout_us - stall_detection_timeout_us) ))
+			if (( t_start_us > (t_last_pinger_restart_us + global_ping_response_timeout_us - stall_detection_timeout_us) ))
 			then
-				global_ping_response_timeout=1
+				t_last_pinger_restart_us=${t_start_us}
 				((min_shaper_rates_enforcement)) && set_min_shaper_rates
 				log_msg "SYSLOG" "Warning: Configured global ping response timeout: ${global_ping_response_timeout_s} seconds exceeded."
 				log_msg "DEBUG" "Restarting pingers."
