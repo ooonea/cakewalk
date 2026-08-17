@@ -1,3 +1,17 @@
+# cakewalk
+
+**cakewalk** is an independent GPL-2.0 continuation of
+[lynxthecat/cake-autorate](https://github.com/lynxthecat/cake-autorate),
+forked at upstream `7934c3e` with full history preserved. It is maintained
+for production use on a NixOS router behind a Starlink link and carries
+fixes and hardening that never landed upstream — see [FORK.md](FORK.md).
+Credit for the original design belongs to lynxthecat, rany2 and the
+cake-autorate contributors.
+
+The original documentation follows.
+
+---
+
 # ⚡CAKE with Adaptive Bandwidth - "cake-autorate"
 
 **cake-autorate** is a script that minimizes latency in routers 
