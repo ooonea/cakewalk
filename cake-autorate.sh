@@ -874,8 +874,11 @@ set_shaper_rate()
 			get_root_qdisc_kind "${direction}" 2>/dev/null || :
 			# Re-anchor the controller to the installed rate: letting
 			# shaper_rate advance past a failed change would run the
-			# control loop open-loop against a stale qdisc.
-			(( shaper_rate_kbps[${direction}]=last_shaper_rate_kbps[${direction}] ))
+			# control loop open-loop against a stale qdisc. Guard the
+			# first-change case: last is still 0 before any success, and
+			# re-anchoring to 0 would wedge the controller there.
+			(( last_shaper_rate_kbps[${direction}] )) &&
+				(( shaper_rate_kbps[${direction}]=last_shaper_rate_kbps[${direction}] ))
 		fi
 	else
 		((output_cake_changes)) && log_msg "DEBUG" "adjust_${direction}_shaper_rate set to 0 in config, so skipping the corresponding tc qdisc change call."
