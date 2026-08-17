@@ -872,6 +872,10 @@ set_shaper_rate()
 		then
 			log_msg "WARNING" "tc failed with status ${tc_status} while setting ${direction} shaper on ${interface[${direction}]} (${qdisc_kind[${direction}]}) to ${shaper_rate_kbps[${direction}]}Kbit."
 			get_root_qdisc_kind "${direction}" 2>/dev/null || :
+			# Re-anchor the controller to the installed rate: letting
+			# shaper_rate advance past a failed change would run the
+			# control loop open-loop against a stale qdisc.
+			(( shaper_rate_kbps[${direction}]=last_shaper_rate_kbps[${direction}] ))
 		fi
 	else
 		((output_cake_changes)) && log_msg "DEBUG" "adjust_${direction}_shaper_rate set to 0 in config, so skipping the corresponding tc qdisc change call."
@@ -880,8 +884,8 @@ set_shaper_rate()
 	if ((tc_status == 0))
 	then
 		# Compensate only for rates known to be installed. On a failed tc
-		# change, retaining the previous compensation keeps the control loop
-		# consistent with the qdisc and leaves this rate pending for retry.
+		# change the controller state was re-anchored above, so thresholds
+		# and bookkeeping all keep describing the qdisc as it really is.
 		((
 			dl_compensation_us=(1000*dl_max_wire_packet_size_bits)/shaper_rate_kbps[dl],
 			ul_compensation_us=(1000*ul_max_wire_packet_size_bits)/shaper_rate_kbps[ul],
