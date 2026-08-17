@@ -31,4 +31,4 @@ reviewed and tested against the deployment instead.
 ## History
 
 The GitHub fork <https://github.com/ooonea/cake-autorate> is the frozen
-archive of the upstream-contribution era (18 merged PRs, ending 2026-08).
+archive of the upstream-contribution era (17 merged PRs, ending 2026-08).
