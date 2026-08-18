@@ -1240,6 +1240,9 @@ esac
 # Check bufferbloat detection threshold not greater than window length
 (( bufferbloat_detection_thr > bufferbloat_detection_window )) && { log_msg "ERROR" "bufferbloat_detection_thr cannot be greater than bufferbloat_detection_window. Exiting script."; exit 1; }
 
+# Check reflector misbehaving detection window is at least one sample
+(( reflector_misbehaving_detection_window < 1 )) && { log_msg "ERROR" "reflector_misbehaving_detection_window must be at least 1. Exiting script."; exit 1; }
+
 # Check if connection_active_thr_kbps is greater than min dl/ul shaper rate
 (( connection_active_thr_kbps > min_dl_shaper_rate_kbps )) && { log_msg "ERROR" "connection_active_thr_kbps cannot be greater than min_dl_shaper_rate_kbps. Exiting script."; exit 1; }
 (( connection_active_thr_kbps > min_ul_shaper_rate_kbps )) && { log_msg "ERROR" "connection_active_thr_kbps cannot be greater than min_ul_shaper_rate_kbps. Exiting script."; exit 1; }
