@@ -475,14 +475,18 @@ EOF
 	set -e
 	assert_eq 2 "${status}" "tc failure status propagated"
 	assert_eq 20000 "${last_shaper_rate_kbps[dl]}" "last shaper unchanged after failure"
+	assert_eq 20000 "${shaper_rate_kbps[dl]}" "failed change re-anchors shaper_rate to the installed rate"
 	assert_eq 1800 "${max_wire_packet_rtt_us}" "failed shaper rate preserves prior compensation"
 	assert_eq cake_mq "${qdisc_kind[dl]}" "missing root qdisc preserves the last known kind"
 
 	FAKE_TC_CHANGE_STATUS=0
 	FAKE_TC_SHOW_STATUS=0
 	export FAKE_TC_CHANGE_STATUS FAKE_TC_SHOW_STATUS
-	assert_success "failed shaper change is retried" set_shaper_rate dl
-	assert_eq 30000 "${last_shaper_rate_kbps[dl]}" "last shaper updated after retry"
+	assert_success "re-anchored rate is a no-op" set_shaper_rate dl
+	assert_eq 20000 "${last_shaper_rate_kbps[dl]}" "no tc change until the controller sets a new rate"
+	shaper_rate_kbps[dl]=30000
+	assert_success "next controller rate is applied" set_shaper_rate dl
+	assert_eq 30000 "${last_shaper_rate_kbps[dl]}" "last shaper updated after recovery"
 
 	ok "set_shaper_rate with fake tc"
 }
