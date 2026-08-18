@@ -21,7 +21,8 @@ main() {
 	MY_OS=unknown
 
 	# Check if OS is OpenWRT or derivative
-	unset ID_LIKE
+	# (openwrt itself sets ID; derivatives set ID_LIKE - check both)
+	unset ID ID_LIKE
 
 	# The following formulations seem to be problematic for some sh versions:
 	# - `. /not_found || true`
@@ -29,7 +30,7 @@ main() {
 	# but this seems to work OK:
 	[ -e "/etc/os-release" ] && . /etc/os-release
 
-	for x in ${ID_LIKE:-}
+	for x in ${ID:-} ${ID_LIKE:-}
 	do
 		if [ "${x}" = "openwrt" ]
 		then
