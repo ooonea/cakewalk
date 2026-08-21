@@ -13,7 +13,7 @@
 download_url() {
 	url="${1}"
 	if type curl >/dev/null 2>&1; then
-		curl -sSL "${url}"
+		curl -fsSL "${url}"
 	elif type wget >/dev/null 2>&1; then
 		wget -qO- "${url}"
 	else
@@ -200,6 +200,7 @@ main() {
 	if [ -z "${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP:-}" ]
 	then
 		tmp=$(mktemp -d)
+		trap 'rm -rf "${tmp}"' EXIT INT TERM
 		archive="${tmp}/archive.tar.gz"
 		download_url "${SRC_DIR}/${commit}.tar.gz" > "${archive}"
 		tar -xozf "${archive}" -C "${tmp}"

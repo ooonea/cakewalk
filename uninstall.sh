@@ -101,7 +101,7 @@ main() {
 	if [ -d "${CONFIG_PREFIX}" ]
 	then
 		cd "${CONFIG_PREFIX}"
-		for file in *config.*.sh*
+		for file in *config.*.sh* mqtt-config.sh mqtt-config.sh.example
 		do
 			[ -e "${file}" ] || continue
 			if [ -z "${keepIt:-}" ]

@@ -905,6 +905,7 @@ EOF
 		assert_failure "blank MQTT config rejected" bash "${repo_dir}/mqtt-publisher.sh" >/dev/null 2>&1
 	grep -Fq 'mv "${tmp}/mqtt-config.sh.example" "${CONFIG_PREFIX}/mqtt-config.sh.example"' "${repo_dir}/setup.sh" || fail "installer does not install the MQTT config example"
 	grep -Fq 'CAKE_AUTORATE_MQTT_CONFIG=%%CONFIG_PREFIX%%/mqtt-config.sh' "${repo_dir}/mqtt-publisher.template" || fail "OpenWrt service does not use the external MQTT config"
+	grep -Fq 'for file in *config.*.sh* mqtt-config.sh mqtt-config.sh.example' "${repo_dir}/uninstall.sh" || fail "uninstall does not apply the config-retention choice to MQTT"
 	grep -Fxq '/mqtt-config.sh' "${repo_dir}/.gitignore" || fail "credential config is not ignored"
 
 	ok "external MQTT configuration"
