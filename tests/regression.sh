@@ -858,6 +858,12 @@ EOF
 	assert_success "raw CAKE framing accepted" get_max_wire_packet_size_bits lo observed
 	assert_eq "${expected}" "${observed}" "raw CAKE overhead compensation"
 
+	FAKE_TC_QDISC_OUTPUT='qdisc cake ca1e: root ptm overhead 1'
+	export FAKE_TC_QDISC_OUTPUT
+	expected=$((65 * ((8 * ($(< /sys/class/net/lo/mtu) + 1) + 63) / 64)))
+	assert_success "PTM CAKE framing accepted" get_max_wire_packet_size_bits lo observed
+	assert_eq "${expected}" "${observed}" "PTM CAKE 65/64 ceiling compensation"
+
 	FAKE_TC_QDISC_OUTPUT='qdisc cake 1: root raw'
 	export FAKE_TC_QDISC_OUTPUT
 	assert_failure "missing CAKE overhead rejected" get_max_wire_packet_size_bits lo observed
