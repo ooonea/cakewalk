@@ -4,6 +4,19 @@ These scripts are for maintainers of `cake-autorate` to simplify some
 housekeeping tasks. If you are a `cake-autorate` user, you should have
 no interest in these scripts.
 
+## Repository checks
+
+Run `maint/check.sh` from any directory to check every shell script with its
+declared interpreter, run ShellCheck, and execute the regression suite. The
+Woodpecker workflow calls the same entrypoint; the Codeberg repository must be
+enabled once in Woodpecker before hosted runs begin.
+
+On NixOS, run it without installing anything globally:
+
+```bash
+nix shell nixpkgs#shellcheck --command ./maint/check.sh
+```
+
 ## Octave Formatter Guide
 
 [@moeller0](https://github.com/moeller0) is the primary developer of

@@ -1,0 +1,9 @@
+steps:
+  - name: check
+    image: alpine:3.22
+    commands:
+      - apk add --no-cache bash shellcheck util-linux
+      - ./maint/check.sh
+
+when:
+  - event: [push, pull_request, manual]
