@@ -814,6 +814,7 @@ sleep_until_next_pinger_time_slot()
 	sleep_remaining_tick_time_monotonic "${t_start_us}" "${time_to_next_time_slot_us}"
 }
 
+# shellcheck disable=SC2034  # Bash expands proc_key inside the quoted unset subscript.
 kill_pinger()
 {
 	local pinger=${1} pinger_pid proc_key
@@ -842,7 +843,7 @@ kill_pinger()
 
 	pinger_pid=${pinger_pids["${pinger}"]:-}
 	[[ -n ${pinger_pid} ]] && terminate "${pinger_pid}"
-	unset "pinger_pids[${pinger}]" "proc_pids[${proc_key}]"
+	unset 'pinger_pids[$pinger]' 'proc_pids[$proc_key]'
 }
 
 stop_pingers()

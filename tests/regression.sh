@@ -593,6 +593,27 @@ test_stopped_pinger_metadata_is_cleared()
 	ok "stopped pinger metadata is cleared"
 }
 
+test_pinger_keys_are_not_re_evaluated()
+{
+	local tmp marker malicious_key pinger_pid
+
+	tmp=$(make_tmp_dir)
+	marker="${tmp}/key-injection"
+	malicious_key='$(touch "'"${marker}"'")'
+	sleep 30 &
+	pinger_pid=${!}
+	declare -gA proc_pids=()
+	declare -gA pinger_pids=(["${malicious_key}"]="${pinger_pid}")
+	pinger_method=ping
+
+	assert_success "stopping adversarial pinger key succeeds" kill_pinger "${malicious_key}"
+	! kill -0 "${pinger_pid}" 2>/dev/null || fail "adversarial pinger was not stopped"
+	[[ ! -e ${marker} ]] || fail "associative pinger key was evaluated as shell code"
+	[[ -z ${pinger_pids["${malicious_key}"]+set} ]] || fail "adversarial pinger key was not cleared"
+
+	ok "pinger keys are not re-evaluated"
+}
+
 test_worker_supervision_detects_exit()
 {
 	local child
@@ -1211,6 +1232,7 @@ test_startup_lock_unsafe_path_fails_loud
 test_runtime_path_safety
 test_operational_bounds
 test_stopped_pinger_metadata_is_cleared
+test_pinger_keys_are_not_re_evaluated
 test_worker_supervision_detects_exit
 test_ping_worker_identity_and_group_cleanup
 test_set_shaper_rate_with_fake_tc
