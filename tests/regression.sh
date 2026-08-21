@@ -103,6 +103,7 @@ eval "$(extract_function validate_operational_bounds)"
 eval "$(extract_function cleanup_and_killall)"
 eval "$(extract_function kill_pinger)"
 eval "$(extract_function stop_pingers)"
+eval "$(extract_function supervise_workers)"
 eval "$(extract_function get_max_wire_packet_size_bits)"
 eval "$(extract_function export_log_file)"
 eval "$(extract_function instance_is_running "${repo_dir}/uninstall.sh")"
@@ -521,6 +522,28 @@ test_stopped_pinger_metadata_is_cleared()
 	! grep -q '_pinger=' "${run_path}/proc_pids" || fail "exported metadata retained stopped pinger"
 
 	ok "stopped pinger metadata is cleared"
+}
+
+test_worker_supervision_detects_exit()
+{
+	local child
+
+	declare -gA proc_pids
+	proc_pids=([main]=${BASHPID})
+	sleep 30 &
+	child=${!}
+	proc_pids[monitor_achieved_rates]=${child}
+	assert_success "live required worker accepted" supervise_workers
+
+	kill -TERM "${child}"
+	wait "${child}" 2>/dev/null || :
+	assert_failure "dead required worker rejected" supervise_workers
+	proc_pids[monitor_achieved_rates]=invalid
+	assert_failure "invalid required worker pid rejected" supervise_workers
+
+	grep -Fq 'read -r -t 1 -u "${main_fd}" -a command' "${repo_dir}/cake-autorate.sh" || fail "main FIFO read is not bounded for supervision"
+
+	ok "worker death supervision"
 }
 
 test_set_shaper_rate_with_fake_tc()
@@ -962,6 +985,7 @@ test_startup_lock_unsafe_path_fails_loud
 test_runtime_path_safety
 test_operational_bounds
 test_stopped_pinger_metadata_is_cleared
+test_worker_supervision_detects_exit
 test_set_shaper_rate_with_fake_tc
 test_negative_cake_overhead
 test_log_export_suffix_and_marker

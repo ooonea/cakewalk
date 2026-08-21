@@ -226,6 +226,22 @@ request_fatal_exit()
 	exit "${exit_status}"
 }
 
+supervise_workers()
+{
+	local worker pid
+
+	for worker in "${!proc_pids[@]}"
+	do
+		[[ ${worker} == main ]] && continue
+		pid=${proc_pids[${worker}]}
+		if [[ ! ${pid} =~ ^[0-9]+$ ]] || ! kill -0 "${pid}" 2>/dev/null
+		then
+			log_msg "ERROR" "Required worker '${worker}' exited unexpectedly."
+			return 1
+		fi
+	done
+}
+
 log_msg()
 {
 	# send logging message to terminal, log file fifo, log file and/or system logger
@@ -1583,7 +1599,8 @@ t_last_bufferbloat_us[dl]=${t_start_us} t_last_bufferbloat_us[ul]=${t_start_us} 
 t_last_decay_us[dl]=${t_start_us} t_last_decay_us[ul]=${t_start_us} \
 t_last_reflector_health_check_us=${t_start_us} \
 t_sustained_connection_idle_us=0 t_last_connection_idle_us=${t_start_us} reflectors_last_timestamp_us=${t_start_us} \
-pingers_t_start_us=${t_start_us} t_last_reflector_replacement_us=${t_start_us} t_last_reflector_comparison_us=${t_start_us}
+pingers_t_start_us=${t_start_us} t_last_reflector_replacement_us=${t_start_us} t_last_reflector_comparison_us=${t_start_us} \
+t_last_worker_supervision_us=${t_start_us}
 
 for ((reflector=0; reflector < no_reflectors; reflector++))
 do
@@ -1607,9 +1624,15 @@ log_msg "INFO" "Started cake-autorate with PID: ${BASHPID} and config: ${config_
 
 while :
 do
-	unset command
+	command=()
 	reflector_response=0
-	read -r -u "${main_fd}" -a command
+	read -r -t 1 -u "${main_fd}" -a command || :
+	t_start_us=${EPOCHREALTIME/.}
+	if (( t_start_us > t_last_worker_supervision_us + 1000000 ))
+	then
+		supervise_workers || request_fatal_exit 1
+		t_last_worker_supervision_us=${t_start_us}
+	fi
 	((${#command[@]})) || continue
 
 	case ${command[0]} in
@@ -1687,8 +1710,6 @@ do
 			esac
 			;;
 	esac
-
-	t_start_us=${EPOCHREALTIME/.}
 
 	if ((reflector_response))
 	then
