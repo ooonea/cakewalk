@@ -100,6 +100,8 @@ eval "$(extract_function release_startup_lock)"
 eval "$(extract_function runtime_path_is_safe)"
 eval "$(extract_function derive_instance_run_path)"
 eval "$(extract_function cleanup_and_killall)"
+eval "$(extract_function kill_pinger)"
+eval "$(extract_function stop_pingers)"
 
 write_fake_stat()
 {
@@ -438,6 +440,35 @@ test_runtime_path_safety()
 	ok "runtime path safety"
 }
 
+test_stopped_pinger_metadata_is_cleared()
+{
+	local tmp fake_proc pinger_pid
+
+	tmp=$(make_tmp_dir)
+	run_path="${tmp}/run"
+	mkdir "${run_path}"
+	fake_proc="${tmp}/proc"
+	write_fake_stat "${fake_proc}" 123 123123
+	CAKE_AUTORATE_PROC_ROOT=${fake_proc}
+	CAKE_AUTORATE_RUN_TOKEN=11111111-2222-3333-4444-555555555555
+	export CAKE_AUTORATE_RUN_TOKEN
+	sleep 30 &
+	pinger_pid=${!}
+	declare -gA proc_pids=([main]=123 [fping_pinger]="${pinger_pid}")
+	declare -gA pinger_pids=([0]="${pinger_pid}")
+	pingers_active=1
+	pinger_method=fping
+
+	assert_success "stopping fping succeeds" stop_pingers
+	! kill -0 "${pinger_pid}" 2>/dev/null || fail "stopped pinger is still alive"
+	assert_eq 0 "${#pinger_pids[@]}" "pinger pid map cleared"
+	[[ -z ${proc_pids[fping_pinger]+set} ]] || fail "proc pid map retained stopped fping"
+	grep -Fxq 'main=123' "${run_path}/proc_pids" || fail "main pid missing after pinger stop"
+	! grep -q '_pinger=' "${run_path}/proc_pids" || fail "exported metadata retained stopped pinger"
+
+	ok "stopped pinger metadata is cleared"
+}
+
 test_set_shaper_rate_with_fake_tc()
 {
 	local tmp fake_bin tc_log status
@@ -685,6 +716,7 @@ test_startup_lock_kernel_semantics
 test_startup_lock_concurrency_and_sigkill_release
 test_startup_lock_unsafe_path_fails_loud
 test_runtime_path_safety
+test_stopped_pinger_metadata_is_cleared
 test_set_shaper_rate_with_fake_tc
 test_terminate_reaps_child
 test_launcher_fail_fast

@@ -779,21 +779,33 @@ sleep_until_next_pinger_time_slot()
 
 kill_pinger()
 {
-	local pinger=${1} pinger_pid
+	local pinger=${1} pinger_pid proc_key
 
 	log_msg "DEBUG" "Starting: ${FUNCNAME[0]} with PID: ${BASHPID}"
 
 	case ${pinger_method} in
-		tsping|fping|fping-ts)
+		tsping)
 			pinger=0
+			proc_key=tsping_pinger
 			;;
-
+		fping|fping-ts)
+			pinger=0
+			proc_key=fping_pinger
+			;;
+		ping)
+			proc_key="ping_${pinger}_pinger"
+			;;
+		irtt)
+			proc_key="irtt_${pinger}_pinger"
+			;;
 		*)
-			;;
+			log_msg "ERROR" "Unknown pinger method: ${pinger_method}"
+			return 1
 	esac
-	
-	pinger_pid=${pinger_pids["${pinger}"]}
-	terminate "${pinger_pid}"
+
+	pinger_pid=${pinger_pids["${pinger}"]:-}
+	[[ -n ${pinger_pid} ]] && terminate "${pinger_pid}"
+	unset "pinger_pids[${pinger}]" "proc_pids[${proc_key}]"
 }
 
 stop_pingers()
@@ -820,6 +832,7 @@ stop_pingers()
 			;;
 	esac
 	pingers_active=0
+	export_proc_pids || { log_msg "ERROR" "Failed to export process metadata after stopping pingers. Exiting script."; exit 1; }
 }
 
 
