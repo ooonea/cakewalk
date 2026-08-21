@@ -866,6 +866,21 @@ EOF
 	ok "CAKE framing and signed overhead"
 }
 
+test_log_timeout_millisecond_precision()
+{
+	local log_file_buffer_timeout_s
+
+	printf -v log_file_buffer_timeout_s %.3f '1e-3'
+	assert_eq 0.001 "${log_file_buffer_timeout_s}" "one millisecond logger timeout"
+	printf -v log_file_buffer_timeout_s %.3f '49e-3'
+	assert_eq 0.049 "${log_file_buffer_timeout_s}" "forty-nine millisecond logger timeout"
+	printf -v log_file_buffer_timeout_s %.3f '50e-3'
+	assert_eq 0.050 "${log_file_buffer_timeout_s}" "fifty millisecond logger timeout"
+	grep -Fq 'printf -v log_file_buffer_timeout_s %.3f "${log_file_buffer_timeout_ms}e-3"' "${repo_dir}/cake-autorate.sh" || fail "logger timeout conversion lost millisecond precision"
+
+	ok "logger timeout millisecond precision"
+}
+
 test_log_export_suffix_and_marker()
 {
 	local tmp marker
@@ -1285,6 +1300,7 @@ test_log_export_suffix_and_marker
 test_install_lifecycle_safety
 test_installer_uses_canonical_source
 test_installation_documentation_matches_runtime
+test_log_timeout_millisecond_precision
 test_mqtt_configuration_is_external
 test_sqm_setup_ownership
 test_terminate_reaps_child

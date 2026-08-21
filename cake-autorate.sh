@@ -468,7 +468,7 @@ maintain_log_file()
 
 	log_msg "DEBUG" "Starting: ${FUNCNAME[0]} with PID: ${BASHPID}"
 
-	printf -v log_file_buffer_timeout_s %.1f "${log_file_buffer_timeout_ms}e-3"
+	printf -v log_file_buffer_timeout_s %.3f "${log_file_buffer_timeout_ms}e-3"
 
 	while :
 	do
