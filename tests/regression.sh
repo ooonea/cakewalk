@@ -8,27 +8,18 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=../lib.sh
 . "${repo_dir}/lib.sh"
 
-tmp_dirs=()
+tmp_root=$(mktemp -d)
 
 cleanup_tmp_dirs()
 {
-	local tmp_dir
-
-	for tmp_dir in "${tmp_dirs[@]}"
-	do
-		rm -rf "${tmp_dir}"
-	done
+	rm -rf "${tmp_root}"
 }
 
 trap cleanup_tmp_dirs EXIT
 
 make_tmp_dir()
 {
-	local tmp_dir
-
-	tmp_dir=$(mktemp -d)
-	tmp_dirs+=("${tmp_dir}")
-	printf '%s\n' "${tmp_dir}"
+	mktemp -d "${tmp_root}/case.XXXXXXXXXX"
 }
 
 fail()
