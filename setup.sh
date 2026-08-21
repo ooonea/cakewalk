@@ -273,6 +273,7 @@ main() {
 	else
 		mv "${tmp}/config.primary.sh" config.primary.sh
 	fi
+	mv "${tmp}/mqtt-config.sh.example" "${CONFIG_PREFIX}/mqtt-config.sh.example"
 
 	# remove old program files from cake-autorate directory
 	cd "${SCRIPT_PREFIX}"
@@ -301,7 +302,8 @@ main() {
 	then
 		sed "s|%%SCRIPT_PREFIX%%|${SCRIPT_PREFIX}|g" "${tmp}/cake-autorate.template" > /etc/init.d/cake-autorate
 		chmod +x /etc/init.d/cake-autorate
-		sed "s|%%SCRIPT_PREFIX%%|${SCRIPT_PREFIX}|g" "${tmp}/mqtt-publisher.template" > /etc/init.d/mqtt-publisher
+		sed -e "s|%%SCRIPT_PREFIX%%|${SCRIPT_PREFIX}|g" -e "s|%%CONFIG_PREFIX%%|${CONFIG_PREFIX}|g" \
+			"${tmp}/mqtt-publisher.template" > /etc/init.d/mqtt-publisher
 		chmod +x /etc/init.d/mqtt-publisher
 	fi
 

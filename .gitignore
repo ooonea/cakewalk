@@ -4,6 +4,7 @@ cake-autorate.*.log.gz
 cake-autorate.*.log.mat
 output.*.*
 /.gitattributes
+/mqtt-config.sh
 
 # benchmarking scripts (tend to be named with a 1, 2, or 3 letter prefix)
 [a-z].sh

@@ -307,6 +307,24 @@ to handle selected logging parameters. Consider disabling logging or
 adjusting logging parameters such as `log_file_max_time_mins` or
 `log_file_max_size_KB` if necessary.
 
+## Optional MQTT publisher (OpenWrt)
+
+The installer copies `mqtt-publisher.sh` and generates an OpenWrt init script,
+but does not enable it. It requires `mosquitto_pub`, file logging, and
+`output_summary_stats=1` for the main Home Assistant sensors;
+`output_cpu_stats=1` supplies the per-core sensors.
+
+Copy `mqtt-config.sh.example` to `mqtt-config.sh`, set `MQTT_HOST`,
+`MQTT_PORT`, `MQTT_USER`, and `MQTT_PASS`, and make the file readable only by
+root before enabling the service. The installer updates the example but
+preserves `mqtt-config.sh` across upgrades. The publisher transfers credentials
+to a private temporary mosquitto client file instead of process arguments.
+
+The publisher discovers `config.*.sh` beside itself and reads
+`cake-autorate.*.log` from `/var/log` or each configured
+`log_file_path_override`. The generated OpenWrt service passes a custom config
+prefix to the publisher.
+
 ## Manual installation (generic Linux)
 
 The installer and service integration target OpenWrt and Asus Merlin. The

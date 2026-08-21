@@ -878,9 +878,36 @@ test_installation_documentation_matches_runtime()
 	grep -Fq 'Bash 5.0 or newer' "${repo_dir}/INSTALLATION.md" || fail "generic-Linux Bash requirement is stale"
 	grep -Fq 'opkg install coreutils-mktemp jsonfilter bash flock fping' "${repo_dir}/INSTALLATION.md" || fail "Entware flock package is undocumented"
 	grep -Fq 'unmarked or' "${repo_dir}/INSTALLATION.md" || fail "SQM ownership boundary is undocumented"
+	grep -Fq 'output_summary_stats=1' "${repo_dir}/INSTALLATION.md" || fail "MQTT logging prerequisite is undocumented"
 	! grep -Fq '/tmp/cake-autorate.log' "${repo_dir}/defaults.sh" || fail "default log path comment is stale"
 
 	ok "installation documentation matches runtime"
+}
+
+test_mqtt_configuration_is_external()
+{
+	local tmp config
+
+	tmp=$(make_tmp_dir)
+	config="${tmp}/mqtt-config.sh"
+	cat > "${config}" <<'EOF'
+MQTT_HOST="127.0.0.1"
+MQTT_PORT="1883"
+MQTT_USER=""
+MQTT_PASS=""
+EOF
+	chmod 600 "${config}"
+	CAKE_AUTORATE_CONFIG_PREFIX=${tmp} CAKE_AUTORATE_MQTT_CONFIG=${config} \
+		assert_success "external MQTT config accepted" bash "${repo_dir}/mqtt-publisher.sh" >/dev/null 2>&1
+
+	: > "${config}"
+	CAKE_AUTORATE_CONFIG_PREFIX=${tmp} CAKE_AUTORATE_MQTT_CONFIG=${config} \
+		assert_failure "blank MQTT config rejected" bash "${repo_dir}/mqtt-publisher.sh" >/dev/null 2>&1
+	grep -Fq 'mv "${tmp}/mqtt-config.sh.example" "${CONFIG_PREFIX}/mqtt-config.sh.example"' "${repo_dir}/setup.sh" || fail "installer does not install the MQTT config example"
+	grep -Fq 'CAKE_AUTORATE_MQTT_CONFIG=%%CONFIG_PREFIX%%/mqtt-config.sh' "${repo_dir}/mqtt-publisher.template" || fail "OpenWrt service does not use the external MQTT config"
+	grep -Fxq '/mqtt-config.sh' "${repo_dir}/.gitignore" || fail "credential config is not ignored"
+
+	ok "external MQTT configuration"
 }
 
 test_sqm_setup_ownership()
@@ -1140,6 +1167,7 @@ test_log_export_suffix_and_marker
 test_install_lifecycle_safety
 test_installer_uses_canonical_source
 test_installation_documentation_matches_runtime
+test_mqtt_configuration_is_external
 test_sqm_setup_ownership
 test_terminate_reaps_child
 test_launcher_fail_fast

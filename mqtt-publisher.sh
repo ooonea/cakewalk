@@ -3,10 +3,29 @@
 
 CPU_CORES=$(grep -c '^processor' /proc/cpuinfo) || { echo "ERROR: failed to detect CPU core count from /proc/cpuinfo" >&2; exit 1; }
 
-MQTT_HOST=""
-MQTT_PORT=""
-MQTT_USER=""
-MQTT_PASS=""
+SCRIPT_PREFIX="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+CONFIG_PREFIX="${CAKE_AUTORATE_CONFIG_PREFIX:-${SCRIPT_PREFIX}}"
+MQTT_CONFIG_PATH="${CAKE_AUTORATE_MQTT_CONFIG:-${CONFIG_PREFIX}/mqtt-config.sh}"
+
+MQTT_HOST=${MQTT_HOST:-}
+MQTT_PORT=${MQTT_PORT:-}
+MQTT_USER=${MQTT_USER:-}
+MQTT_PASS=${MQTT_PASS:-}
+if [[ -r ${MQTT_CONFIG_PATH} ]]
+then
+    # shellcheck source=mqtt-config.sh.example
+    . "${MQTT_CONFIG_PATH}"
+fi
+if [[ -z ${MQTT_HOST} || ! ${MQTT_PORT} =~ ^[1-9][0-9]{0,4}$ ]] || ((10#${MQTT_PORT:-0} > 65535))
+then
+    echo "ERROR: configure a non-empty MQTT_HOST and a valid MQTT_PORT in ${MQTT_CONFIG_PATH}" >&2
+    exit 1
+fi
+if [[ -n ${MQTT_PASS} && -z ${MQTT_USER} ]]
+then
+    echo "ERROR: MQTT_USER is required when MQTT_PASS is set" >&2
+    exit 1
+fi
 
 DISC_PREFIX="homeassistant"
 BASE_DEVICE_ID="cake_autorate"
@@ -215,13 +234,8 @@ publish_stats()
 #
 # cake-autorate honours log_file_path_override per instance, so globbing only
 # /var/log misses a relocated log and the publisher then silently does nothing.
-# Resolve the log dir(s) the same way cake-autorate does, from the configs next
-# to this script. The init.d launches ${SCRIPT_PREFIX}/mqtt-publisher.sh, so the
-# script's own directory is SCRIPT_PREFIX; CONFIG_PREFIX equals it unless the
-# install used a custom CAKE_AUTORATE_CONFIG_PREFIX (or Asuswrt-Merlin), whose
-# configs are then not auto-discovered (we fall back to /var/log + the warning).
-SCRIPT_PREFIX="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-CONFIG_PREFIX="${SCRIPT_PREFIX}"
+# Resolve the log dir(s) the same way cake-autorate does. The generated OpenWrt
+# service supplies CONFIG_PREFIX when it differs from SCRIPT_PREFIX.
 
 declare -A seen_log_dir=()
 log_dirs=()
