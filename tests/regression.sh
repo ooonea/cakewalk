@@ -716,6 +716,100 @@ test_install_lifecycle_safety()
 	ok "install lifecycle safety"
 }
 
+test_sqm_setup_ownership()
+{
+	local tmp fake_bin config state saved_path
+
+	tmp=$(make_tmp_dir)
+	fake_bin="${tmp}/bin"
+	config="${tmp}/config.primary.sh"
+	state="${tmp}/state"
+	mkdir "${fake_bin}"
+	cat > "${config}" <<'EOF'
+dl_if=ifb-wan
+ul_if=wan
+base_dl_shaper_rate_kbps=1000
+base_ul_shaper_rate_kbps=1000
+EOF
+	cat > "${fake_bin}/ip" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_IP_LOG}"
+case $* in
+	'link show wan') exit 0 ;;
+	'-d link show dev ifb-wan') printf '%s\n' '    ifb numtxqueues 1 numrxqueues 1'; exit 0 ;;
+	'link show dev ifb-wan') printf '%s\n' '    alias cakewalk-sqm:primary:wan:ifb-wan'; exit 0 ;;
+esac
+EOF
+	cat > "${fake_bin}/tc" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_TC_LOG}"
+case $* in
+	'qdisc show root dev wan') printf '%s\n' "${FAKE_TC_ROOT_OUTPUT:-qdisc cake ca1e: root}" ;;
+	'filter show dev wan parent ffff:') printf '%s' "${FAKE_TC_FILTER_OUTPUT:-}" ;;
+esac
+EOF
+	cat > "${fake_bin}/modprobe" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+	chmod +x "${fake_bin}/ip" "${fake_bin}/tc" "${fake_bin}/modprobe"
+	FAKE_IP_LOG="${tmp}/ip.log"
+	FAKE_TC_LOG="${tmp}/tc.log"
+	export FAKE_IP_LOG FAKE_TC_LOG
+	saved_path=${PATH}
+	PATH="${fake_bin}:${PATH}"
+	export PATH
+
+	CAKE_AUTORATE_SQM_STATE_DIR=${state} assert_success "SQM setup starts" \
+		"${repo_dir}/sqm-setup.sh" start "${config}"
+	[[ -f ${state}/primary/interfaces ]] || fail "SQM interface ownership state missing"
+	[[ -e ${state}/primary/ul-root ]] || fail "upload ownership marker missing"
+	[[ -e ${state}/primary/ingress ]] || fail "ingress ownership marker missing"
+	[[ -e ${state}/primary/ifb ]] || fail "IFB ownership marker missing"
+	grep -Fxq 'qdisc add root dev wan handle ca1e: cake bandwidth 1000kbit nat dual-srchost' "${FAKE_TC_LOG}" || fail "upload qdisc lacks the owned handle"
+
+	CAKE_AUTORATE_SQM_STATE_DIR=${state} assert_success "SQM setup stops owned objects" \
+		"${repo_dir}/sqm-setup.sh" stop "${config}"
+	grep -Fxq 'qdisc del root dev wan' "${FAKE_TC_LOG}" || fail "owned upload qdisc not removed"
+	grep -Fxq 'filter del dev wan parent ffff: protocol all pref 49152 u32' "${FAKE_TC_LOG}" || fail "owned ingress filter not removed"
+	grep -Fxq 'link del ifb-wan' "${FAKE_IP_LOG}" || fail "owned IFB not removed"
+	[[ ! -e ${state}/primary ]] || fail "SQM ownership state not removed after teardown"
+
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/unowned" assert_success "SQM stop ignores unowned objects" \
+		"${repo_dir}/sqm-setup.sh" stop "${config}"
+	[[ ! -s ${FAKE_IP_LOG} && ! -s ${FAKE_TC_LOG} ]] || fail "SQM stop touched unowned objects"
+
+	mkdir -p "${state}/primary"
+	printf '%s\n%s\n' wan ifb-wan > "${state}/primary/interfaces"
+	: > "${state}/primary/ul-root"
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	FAKE_TC_ROOT_OUTPUT='qdisc fq_codel 0: root'
+	export FAKE_TC_ROOT_OUTPUT
+	CAKE_AUTORATE_SQM_STATE_DIR=${state} assert_failure "SQM refuses a foreign marked upload qdisc" \
+		"${repo_dir}/sqm-setup.sh" stop "${config}"
+	! grep -Fxq 'qdisc del root dev wan' "${FAKE_TC_LOG}" || fail "foreign upload qdisc was removed"
+	[[ -e ${state}/primary/ul-root ]] || fail "refused upload ownership state was discarded"
+	unset FAKE_TC_ROOT_OUTPUT
+
+	cat > "${tmp}/config.same.sh" <<'EOF'
+dl_if=wan
+ul_if=wan
+base_dl_shaper_rate_kbps=1000
+base_ul_shaper_rate_kbps=1000
+EOF
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/same" assert_failure "SQM rejects matching interfaces before teardown" \
+		"${repo_dir}/sqm-setup.sh" stop "${tmp}/config.same.sh"
+	[[ ! -s ${FAKE_IP_LOG} && ! -s ${FAKE_TC_LOG} ]] || fail "invalid interfaces reached a network command"
+	PATH=${saved_path}
+
+	ok "SQM setup ownership and interface validation"
+}
+
 test_terminate_reaps_child()
 {
 	local child
@@ -872,6 +966,7 @@ test_set_shaper_rate_with_fake_tc
 test_negative_cake_overhead
 test_log_export_suffix_and_marker
 test_install_lifecycle_safety
+test_sqm_setup_ownership
 test_terminate_reaps_child
 test_launcher_fail_fast
 test_launcher_child_success

@@ -40,6 +40,14 @@ if [[ ! -f ${config} ]]; then
 	exit 1
 fi
 
+config_basename=${config##*/}
+if [[ ! ${config_basename} =~ ^config\.([A-Za-z0-9_-]+)\.sh$ ]]
+then
+	printf >&2 'sqm-setup.sh: config filename must match config.X.sh with a safe non-empty instance identifier\n'
+	exit 1
+fi
+instance_id=${BASH_REMATCH[1]}
+
 # Pull dl_if / ul_if and the base rates from defaults + instance config.
 # shellcheck source=/dev/null
 . "${script_dir}/defaults.sh"
@@ -51,6 +59,22 @@ fi
 : "${base_dl_shaper_rate_kbps:?sqm-setup.sh: base_dl_shaper_rate_kbps is not set}"
 : "${base_ul_shaper_rate_kbps:?sqm-setup.sh: base_ul_shaper_rate_kbps is not set}"
 
+if [[ ${dl_if} == "${ul_if}" ]]
+then
+	printf >&2 'sqm-setup.sh: dl_if and ul_if must name different interfaces\n'
+	exit 1
+fi
+if [[ ! ${dl_if} =~ ^[A-Za-z0-9_.:-]+$ || ! ${ul_if} =~ ^[A-Za-z0-9_.:-]+$ ]]
+then
+	printf >&2 'sqm-setup.sh: interface names contain unsupported characters\n'
+	exit 1
+fi
+if [[ ! ${base_dl_shaper_rate_kbps} =~ ^[1-9][0-9]*$ || ! ${base_ul_shaper_rate_kbps} =~ ^[1-9][0-9]*$ ]]
+then
+	printf >&2 'sqm-setup.sh: base shaper rates must be positive decimal integers\n'
+	exit 1
+fi
+
 # Optional per-direction extra CAKE keywords. The defaults give full per-host
 # fairness on a NAT router, like OpenWrt SQM: "nat" resolves the inside hosts,
 # and dual-srchost (egress) / dual-dsthost (ingress) share bandwidth per LAN
@@ -58,15 +82,128 @@ fi
 sqm_dl_cake_opts=${sqm_dl_cake_opts:-nat dual-dsthost ingress}
 sqm_ul_cake_opts=${sqm_ul_cake_opts:-nat dual-srchost}
 
-teardown() {
-	tc qdisc del root dev "${ul_if}" 2>/dev/null || true
-	tc qdisc del dev "${ul_if}" ingress 2>/dev/null || true
-	ip link del "${dl_if}" 2>/dev/null || true
+sqm_state_root=${CAKE_AUTORATE_SQM_STATE_DIR:-/run/cake-autorate/sqm}
+sqm_state_path="${sqm_state_root}/${instance_id}"
+sqm_interfaces_state="${sqm_state_path}/interfaces"
+sqm_qdisc_handle=ca1e:
+sqm_filter_pref=49152
+created_ul_root=0
+created_ingress=0
+created_ifb=0
+
+write_state()
+{
+	local state_tmp="${sqm_interfaces_state}.tmp.${BASHPID}"
+
+	( umask 077 && mkdir -p "${sqm_state_path}" )
+	printf '%s\n%s\n' "${ul_if}" "${dl_if}" > "${state_tmp}"
+	mv -f "${state_tmp}" "${sqm_interfaces_state}"
+}
+
+record_ownership()
+{
+	: > "${sqm_state_path}/${1}"
+}
+
+rollback_current()
+{
+	trap - ERR
+	((created_ingress)) && tc filter del dev "${ul_if}" parent ffff: protocol all pref "${sqm_filter_pref}" u32 2>/dev/null || true
+	((created_ingress)) && tc qdisc del dev "${ul_if}" ingress 2>/dev/null || true
+	((created_ul_root)) && tc qdisc del root dev "${ul_if}" 2>/dev/null || true
+	((created_ifb)) && ip link del "${dl_if}" 2>/dev/null || true
+	rm -rf "${sqm_state_path}"
+	rmdir "${sqm_state_root}" 2>/dev/null || true
+}
+
+teardown_managed()
+{
+	local managed_interfaces managed_ul_if managed_dl_if managed_ifb_alias qdisc_output filter_output status=0
+
+	[[ -d ${sqm_state_path} ]] || return 0
+	if [[ ! -f ${sqm_interfaces_state} ]]
+	then
+		printf >&2 'sqm-setup.sh: ownership state is incomplete for instance %s; refusing teardown\n' "${instance_id}"
+		return 1
+	fi
+	mapfile -t managed_interfaces < "${sqm_interfaces_state}"
+	if ((${#managed_interfaces[@]} != 2)) || [[ ! ${managed_interfaces[0]} =~ ^[A-Za-z0-9_.:-]+$ || ! ${managed_interfaces[1]} =~ ^[A-Za-z0-9_.:-]+$ ]]
+	then
+		printf >&2 'sqm-setup.sh: ownership state is invalid for instance %s; refusing teardown\n' "${instance_id}"
+		return 1
+	fi
+	managed_ul_if=${managed_interfaces[0]}
+	managed_dl_if=${managed_interfaces[1]}
+	managed_ifb_alias="cakewalk-sqm:${instance_id}:${managed_ul_if}:${managed_dl_if}"
+
+	if [[ -e ${sqm_state_path}/ingress ]]
+	then
+		tc filter del dev "${managed_ul_if}" parent ffff: protocol all pref "${sqm_filter_pref}" u32 2>/dev/null || true
+		filter_output=$(tc filter show dev "${managed_ul_if}" parent ffff: 2>/dev/null) || filter_output=
+		if grep -Eq "(^|[[:space:]])pref[[:space:]]+${sqm_filter_pref}([[:space:]]|$)" <<< "${filter_output}"
+		then
+			printf >&2 'sqm-setup.sh: marked ingress filter on %s could not be removed\n' "${managed_ul_if}"
+			status=1
+		else
+			rm -f "${sqm_state_path}/ingress"
+		fi
+		if [[ -z ${filter_output} ]]
+		then
+			tc qdisc del dev "${managed_ul_if}" ingress 2>/dev/null || true
+		fi
+	fi
+
+	if [[ -e ${sqm_state_path}/ul-root ]]
+	then
+		qdisc_output=$(tc qdisc show root dev "${managed_ul_if}" 2>/dev/null) || qdisc_output=
+		if [[ ${qdisc_output} =~ ^qdisc[[:space:]]+(cake_mq|cake)[[:space:]]+${sqm_qdisc_handle}([[:space:]]|$) ]]
+		then
+			if tc qdisc del root dev "${managed_ul_if}" 2>/dev/null
+			then
+				rm -f "${sqm_state_path}/ul-root"
+			else
+				printf >&2 'sqm-setup.sh: marked upload qdisc on %s could not be removed\n' "${managed_ul_if}"
+				status=1
+			fi
+		else
+			printf >&2 'sqm-setup.sh: marked upload qdisc on %s no longer has the owned handle; refusing removal\n' "${managed_ul_if}"
+			status=1
+		fi
+	fi
+
+	if [[ -e ${sqm_state_path}/ifb ]]
+	then
+		if ! ip link show dev "${managed_dl_if}" >/dev/null 2>&1
+		then
+			rm -f "${sqm_state_path}/ifb"
+		elif ip -d link show dev "${managed_dl_if}" 2>/dev/null | grep -Eq '^[[:space:]]*ifb([[:space:]]|$)' &&
+			ip link show dev "${managed_dl_if}" 2>/dev/null | grep -Fq "alias ${managed_ifb_alias}"
+		then
+			if ip link del "${managed_dl_if}" 2>/dev/null
+			then
+				rm -f "${sqm_state_path}/ifb"
+			else
+				printf >&2 'sqm-setup.sh: marked download interface %s could not be removed\n' "${managed_dl_if}"
+				status=1
+			fi
+		else
+			printf >&2 'sqm-setup.sh: marked download interface %s no longer has the owned IFB identity; refusing removal\n' "${managed_dl_if}"
+			status=1
+		fi
+	fi
+
+	if ((status == 0))
+	then
+		rm -f "${sqm_interfaces_state}"
+		rmdir "${sqm_state_path}" 2>/dev/null || true
+		rmdir "${sqm_state_root}" 2>/dev/null || true
+	fi
+	return "${status}"
 }
 
 case ${action} in
 	stop)
-		teardown
+		teardown_managed
 		;;
 	start)
 		if ! ip link show "${ul_if}" >/dev/null 2>&1; then
@@ -78,22 +215,30 @@ case ${action} in
 		# (Only takes effect on the module's first load, i.e. a clean boot.)
 		modprobe ifb numifbs=0 2>/dev/null || true
 		modprobe sch_cake 2>/dev/null || true
-		teardown
-		trap teardown ERR # roll back a partial setup if any command below fails
+		teardown_managed
+		write_state
+		trap rollback_current ERR
 
 		# Upload: shape egress on the WAN interface.
 		# shellcheck disable=SC2086
-		tc qdisc add root dev "${ul_if}" cake \
+		tc qdisc add root dev "${ul_if}" handle "${sqm_qdisc_handle}" cake \
 			bandwidth "${base_ul_shaper_rate_kbps}kbit" ${sqm_ul_cake_opts}
+		created_ul_root=1
+		record_ownership ul-root
 
 		# Download: redirect WAN ingress into an IFB and shape that.
 		ip link add "${dl_if}" type ifb
+		created_ifb=1
+		ip link set dev "${dl_if}" alias "cakewalk-sqm:${instance_id}:${ul_if}:${dl_if}"
+		record_ownership ifb
 		ip link set "${dl_if}" up
 		tc qdisc add dev "${ul_if}" handle ffff: ingress
+		created_ingress=1
+		record_ownership ingress
 		tc filter add dev "${ul_if}" parent ffff: protocol all \
-			u32 match u32 0 0 action mirred egress redirect dev "${dl_if}"
+			pref "${sqm_filter_pref}" u32 match u32 0 0 action mirred egress redirect dev "${dl_if}"
 		# shellcheck disable=SC2086
-		tc qdisc add root dev "${dl_if}" cake \
+		tc qdisc add root dev "${dl_if}" handle "${sqm_qdisc_handle}" cake \
 			bandwidth "${base_dl_shaper_rate_kbps}kbit" ${sqm_dl_cake_opts}
 		trap - ERR
 		;;
