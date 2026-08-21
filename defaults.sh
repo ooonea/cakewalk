@@ -31,7 +31,7 @@ log_DEBUG_messages_to_syslog=0	# enable (1) or disable (0) logging of all DEBUG 
 # ** Take care with these settings to ensure you won't run into OOM issues on your router ***
 # every write the cumulative write time and bytes associated with each log line are checked
 # and if either exceeds the configured values below, the log file is rotated
-log_to_file=1              # enable (1) or disable (0) output logging to file (/tmp/cake-autorate.log)
+log_to_file=1              # enable (1) or disable (0) output logging to file (/var/log/cake-autorate*.log)
 log_file_max_time_mins=10  # maximum time between log file rotations
 log_file_max_size_KB=2000  # maximum KB (i.e. bytes/1024) worth of log lines between log file rotations
 

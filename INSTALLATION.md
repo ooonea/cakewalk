@@ -1,9 +1,17 @@
-# Installing cake-autorate
+# Installing cakewalk
 
-**cake-autorate** is a script that minimizes latency by adjusting CAKE
+**cakewalk** is a script that minimizes latency by adjusting CAKE
 bandwidth settings based on traffic load and round-trip time
 measurements. See the main [README](./README.md) page for more details
-of the algorithm.
+of the algorithm. This fork preserves the original cake-autorate paths and
+configuration names for compatibility.
+
+The canonical source is [ooonea/cakewalk on Codeberg](https://codeberg.org/ooonea/cakewalk).
+The installer follows `main` by default, resolves its current commit through
+the Codeberg API, downloads that exact archive, and records the version and
+commit in `version.txt`. Set `CAKE_AUTORATE_COMMIT` to a reviewed 40-character
+commit ID for a reproducible install, or `CAKE_AUTORATE_BRANCH` to test another
+branch.
 
 ## Installation Steps (OpenWrt)
 
@@ -46,8 +54,8 @@ required tools. To use it:
   below. The commands retrieve the current version from this repo:
 
   ```bash
-  wget -O /tmp/cake-autorate_setup.sh https://raw.githubusercontent.com/lynxthecat/cake-autorate/master/setup.sh
-  sh /tmp/cake-autorate_setup.sh
+  wget -O /tmp/cakewalk-setup.sh https://codeberg.org/ooonea/cakewalk/raw/branch/main/setup.sh
+  sh /tmp/cakewalk-setup.sh
   ```
 
 - The installer script will detect a previous configuration file, and
@@ -59,8 +67,9 @@ required tools. To use it:
 
 - [SSH into the router](https://github.com/RMerl/asuswrt-merlin.ng/wiki/SSHD)
 
-- Make sure these are installed: entware; coreutils-mktemp; jsonfilter; Bash 5.0 or newer;
-  a package that provides the `flock` command; and iputils-ping or fping.
+- Make sure these are installed: Entware; coreutils-mktemp; jsonfilter; Bash
+  5.0 or newer; the Entware `flock` package; and iputils-ping or fping.
+  `flock` is required for crash-safe instance startup locking.
 
   - Firstly, if not already installed,
     [install entware](https://github.com/RMerl/asuswrt-merlin.ng/wiki/Entware);
@@ -68,15 +77,15 @@ required tools. To use it:
 
   ```bash
   opkg update
-  opkg install coreutils-mktemp jsonfilter bash fping
+  opkg install coreutils-mktemp jsonfilter bash flock fping
   ```
 
 - Use the installer script by copying and pasting each of the commands
   below. The commands retrieve the current version from this repo:
 
   ```bash
-  wget -O /tmp/cake-autorate_setup.sh https://raw.githubusercontent.com/lynxthecat/cake-autorate/master/setup.sh
-  sh /tmp/cake-autorate_setup.sh
+  wget -O /tmp/cakewalk-setup.sh https://codeberg.org/ooonea/cakewalk/raw/branch/main/setup.sh
+  sh /tmp/cakewalk-setup.sh
   ```
 
 ## Initial Configuration Steps (OpenWrt and Asus Merlin)
@@ -252,7 +261,7 @@ be (and is ideally) fine-tuned.
     |         `output_cpu_raw_stats` | If non-zero, log the raw CPU usage lines obtained during CPU usage monitoring                                                                                                              |
     |                        `debug` | If non-zero, debug lines will be output                                                                                                                                                   |
     | `log_DEBUG_messages_to_syslog` | If non-zero, log lines will also get sent to the system log                                                                                                                               |
-    |                  `log_to_file` | If non-zero, log lines will be sent to /tmp/cake-autorate.log regardless of whether printing to console `log_file_max_time_mins` have elapsed or `log_file_max_size_KB` has been exceeded |
+    |                  `log_to_file` | If non-zero, log lines will be sent to `/var/log/cake-autorate.instance.log` or the configured `log_file_path_override` directory regardless of whether printing to console `log_file_max_time_mins` have elapsed or `log_file_max_size_KB` has been exceeded |
     |       `log_file_max_time_mins` | Number of minutes to elapse between log file rotaton                                                                                                                                      |
     |         `log_file_max_size_KB` | Number of KB (i.e. bytes/1024) worth of log lines between log file rotations                                                                                                              |
 
@@ -297,6 +306,41 @@ WARNING: Take care to ensure sufficient free memory exists on router
 to handle selected logging parameters. Consider disabling logging or
 adjusting logging parameters such as `log_file_max_time_mins` or
 `log_file_max_size_KB` if necessary.
+
+## Manual installation (generic Linux)
+
+The installer and service integration target OpenWrt and Asus Merlin. The
+runtime also supports a generic Linux router when its CAKE qdiscs are created
+explicitly. This path requires root, Bash 5.0 or newer, `iproute2` (`ip` and
+`tc`), `flock`, `fping` or another configured pinger, and the usual `awk`,
+`grep`, `sed`, `mktemp`, `wc`, and `gzip` utilities. The kernel must provide
+CAKE and IFB support, either built in or through loadable modules. `logger` is
+optional.
+
+Copy `cake-autorate.sh`, `defaults.sh`, `lib.sh`, `sqm-setup.sh`, and one
+`config.primary.sh` into a directory such as `/opt/cake-autorate`, then run:
+
+```bash
+cd /opt/cake-autorate
+./sqm-setup.sh start ./config.primary.sh
+./cake-autorate.sh ./config.primary.sh
+```
+
+The helper creates an egress CAKE qdisc on `ul_if` and an IFB ingress CAKE
+qdisc on `dl_if`, using the base rates and `sqm_*_cake_opts` from the same
+configuration. It records and verifies ownership before teardown: unmarked or
+identity-mismatched network objects are never removed. Before the first start,
+remove or migrate any pre-existing qdisc/IFB topology deliberately; the helper
+will not adopt it implicitly.
+
+Stop the runtime before tearing down the objects it created:
+
+```bash
+./sqm-setup.sh stop ./config.primary.sh
+```
+
+This is a manual integration path: no system service, boot integration, or
+MQTT init script is generated for generic Linux.
 
 ## Launch on Boot (Asus Merlin)
 

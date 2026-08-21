@@ -872,6 +872,17 @@ test_installer_uses_canonical_source()
 	ok "installer canonical source and commit pin"
 }
 
+test_installation_documentation_matches_runtime()
+{
+	grep -Fq 'https://codeberg.org/ooonea/cakewalk/raw/branch/main/setup.sh' "${repo_dir}/INSTALLATION.md" || fail "installation guide does not fetch cakewalk"
+	grep -Fq 'Bash 5.0 or newer' "${repo_dir}/INSTALLATION.md" || fail "generic-Linux Bash requirement is stale"
+	grep -Fq 'opkg install coreutils-mktemp jsonfilter bash flock fping' "${repo_dir}/INSTALLATION.md" || fail "Entware flock package is undocumented"
+	grep -Fq 'unmarked or' "${repo_dir}/INSTALLATION.md" || fail "SQM ownership boundary is undocumented"
+	! grep -Fq '/tmp/cake-autorate.log' "${repo_dir}/defaults.sh" || fail "default log path comment is stale"
+
+	ok "installation documentation matches runtime"
+}
+
 test_sqm_setup_ownership()
 {
 	local tmp fake_bin config state saved_path
@@ -1128,6 +1139,7 @@ test_negative_cake_overhead
 test_log_export_suffix_and_marker
 test_install_lifecycle_safety
 test_installer_uses_canonical_source
+test_installation_documentation_matches_runtime
 test_sqm_setup_ownership
 test_terminate_reaps_child
 test_launcher_fail_fast
