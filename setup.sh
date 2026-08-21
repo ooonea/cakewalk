@@ -41,6 +41,18 @@ instance_is_running()
 	return 1
 }
 
+setup_tmp_is_safe()
+{
+	tmp=${1}
+	case "${tmp}" in
+		/tmp/cake-autorate-setup.??????????) ;;
+		*) return 1 ;;
+	esac
+	[ -d "${tmp}" ] && [ ! -L "${tmp}" ] || return 1
+	[ -f "${tmp}/.cake-autorate-setup-tmp" ] || return 1
+	[ "$(cat "${tmp}/.cake-autorate-setup-tmp" 2>/dev/null)" = cake-autorate-setup-tmp ] || return 1
+}
+
 # This needs to be encapsulated into a function so that we are sure that
 # sh reads all the contents of the shell file before we potentially erase it.
 #
@@ -199,8 +211,7 @@ main() {
 	# Download the selected commit and strip the archive's one top-level directory.
 	if [ -z "${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP:-}" ]
 	then
-		tmp=$(mktemp -d)
-		trap 'rm -rf "${tmp}"' EXIT INT TERM
+		tmp=$(mktemp -d /tmp/cake-autorate-setup.XXXXXXXXXX)
 		archive="${tmp}/archive.tar.gz"
 		download_url "${SRC_DIR}/${commit}.tar.gz" > "${archive}"
 		tar -xozf "${archive}" -C "${tmp}"
@@ -223,8 +234,16 @@ main() {
 			mv "${hidden}" "${tmp}"
 		done
 		rmdir "${archive_root}"
+		printf '%s\n' cake-autorate-setup-tmp > "${tmp}/.cake-autorate-setup-tmp"
+		chmod 600 "${tmp}/.cake-autorate-setup-tmp"
 	else
 		tmp="${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP}"
+		# shellcheck disable=SC2310  # rejection is handled explicitly below
+		if ! setup_tmp_is_safe "${tmp}"
+		then
+			printf >&2 'Invalid self-replacement temporary directory\n'
+			exit 1
+		fi
 	fi
 	trap 'rm -rf "${tmp}"' EXIT INT TERM
 

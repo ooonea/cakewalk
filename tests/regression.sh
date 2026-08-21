@@ -168,6 +168,21 @@ test_bash_requirement()
 	ok "Bash 5 requirement"
 }
 
+test_setup_tmp_handoff_guard()
+{
+	local tmp unsafe_target
+
+	tmp=$(make_tmp_dir)
+	unsafe_target="${tmp}/must-survive"
+	: > "${unsafe_target}"
+	eval "$(awk '/^setup_tmp_is_safe\(\)/,/^\}/' "${repo_dir}/setup.sh")"
+	assert_failure "installer rejects ambient temporary path" setup_tmp_is_safe "${tmp}"
+	assert_failure "installer rejects broad temporary path" setup_tmp_is_safe /tmp
+	[[ -f "${unsafe_target}" ]] || fail "handoff guard touched an external target"
+
+	ok "installer temporary handoff guard"
+}
+
 test_project_version_metadata()
 {
 	local version
@@ -1220,6 +1235,7 @@ EOF
 test_numeric_validation
 test_runtime_requires_flock
 test_bash_requirement
+test_setup_tmp_handoff_guard
 test_project_version_metadata
 test_pinger_field_validation
 test_controller_clock_domains
