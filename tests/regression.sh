@@ -99,6 +99,7 @@ eval "$(extract_function acquire_startup_lock)"
 eval "$(extract_function release_startup_lock)"
 eval "$(extract_function runtime_path_is_safe)"
 eval "$(extract_function derive_instance_run_path)"
+eval "$(extract_function validate_operational_bounds)"
 eval "$(extract_function cleanup_and_killall)"
 eval "$(extract_function kill_pinger)"
 eval "$(extract_function stop_pingers)"
@@ -440,6 +441,46 @@ test_runtime_path_safety()
 	ok "runtime path safety"
 }
 
+test_operational_bounds()
+{
+	bufferbloat_detection_window=6
+	bufferbloat_detection_thr=3
+	reflector_misbehaving_detection_window=60
+	reflector_misbehaving_detection_thr=3
+	log_to_file=1
+	log_file_buffer_size_B=512
+	log_file_buffer_timeout_ms=500
+	assert_success "default operational bounds accepted" validate_operational_bounds
+
+	bufferbloat_detection_window=0
+	assert_failure "zero bufferbloat window rejected" validate_operational_bounds
+	bufferbloat_detection_window=6
+	bufferbloat_detection_thr=0
+	assert_failure "zero bufferbloat threshold rejected" validate_operational_bounds
+	bufferbloat_detection_thr=7
+	assert_failure "oversized bufferbloat threshold rejected" validate_operational_bounds
+	bufferbloat_detection_thr=3
+
+	reflector_misbehaving_detection_window=0
+	assert_failure "zero reflector window rejected" validate_operational_bounds
+	reflector_misbehaving_detection_window=60
+	reflector_misbehaving_detection_thr=0
+	assert_failure "zero reflector threshold rejected" validate_operational_bounds
+	reflector_misbehaving_detection_thr=61
+	assert_failure "oversized reflector threshold rejected" validate_operational_bounds
+	reflector_misbehaving_detection_thr=3
+
+	log_file_buffer_size_B=0
+	assert_failure "zero log buffer size rejected" validate_operational_bounds
+	log_file_buffer_size_B=512
+	log_file_buffer_timeout_ms=0
+	assert_failure "zero log buffer timeout rejected" validate_operational_bounds
+	log_to_file=0
+	assert_success "unused zero log timeout accepted" validate_operational_bounds
+
+	ok "operational bounds"
+}
+
 test_stopped_pinger_metadata_is_cleared()
 {
 	local tmp fake_proc pinger_pid
@@ -716,6 +757,7 @@ test_startup_lock_kernel_semantics
 test_startup_lock_concurrency_and_sigkill_release
 test_startup_lock_unsafe_path_fails_loud
 test_runtime_path_safety
+test_operational_bounds
 test_stopped_pinger_metadata_is_cleared
 test_set_shaper_rate_with_fake_tc
 test_terminate_reaps_child

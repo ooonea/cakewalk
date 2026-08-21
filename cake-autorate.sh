@@ -130,6 +130,15 @@ derive_instance_run_path()
 	runtime_path_is_safe
 }
 
+validate_operational_bounds()
+{
+	(( bufferbloat_detection_window >= 1 )) || { log_msg "ERROR" "bufferbloat_detection_window must be at least 1."; return 1; }
+	(( bufferbloat_detection_thr >= 1 && bufferbloat_detection_thr <= bufferbloat_detection_window )) || { log_msg "ERROR" "bufferbloat_detection_thr must be between 1 and bufferbloat_detection_window."; return 1; }
+	(( reflector_misbehaving_detection_window >= 1 )) || { log_msg "ERROR" "reflector_misbehaving_detection_window must be at least 1."; return 1; }
+	(( reflector_misbehaving_detection_thr >= 1 && reflector_misbehaving_detection_thr <= reflector_misbehaving_detection_window )) || { log_msg "ERROR" "reflector_misbehaving_detection_thr must be between 1 and reflector_misbehaving_detection_window."; return 1; }
+	(( log_to_file == 0 || (log_file_buffer_size_B >= 1 && log_file_buffer_timeout_ms >= 1) )) || { log_msg "ERROR" "log_file_buffer_size_B and log_file_buffer_timeout_ms must be at least 1 when file logging is enabled."; return 1; }
+}
+
 cleanup_and_killall()
 {	
 	local exit_status=${1:-0} config_path_for_log=${config_path:-unknown}
@@ -1274,11 +1283,7 @@ esac
 # Check dl/if interface not the same
 [[ "${dl_if}" == "${ul_if}" ]] && { log_msg "ERROR" "download interface and upload interface are both set to: '${dl_if}', but cannot be the same. Exiting script."; exit 1; }
 
-# Check bufferbloat detection threshold not greater than window length
-(( bufferbloat_detection_thr > bufferbloat_detection_window )) && { log_msg "ERROR" "bufferbloat_detection_thr cannot be greater than bufferbloat_detection_window. Exiting script."; exit 1; }
-
-# Check reflector misbehaving detection window is at least one sample
-(( reflector_misbehaving_detection_window < 1 )) && { log_msg "ERROR" "reflector_misbehaving_detection_window must be at least 1. Exiting script."; exit 1; }
+validate_operational_bounds || exit 1
 
 # Check if connection_active_thr_kbps is greater than min dl/ul shaper rate
 (( connection_active_thr_kbps > min_dl_shaper_rate_kbps )) && { log_msg "ERROR" "connection_active_thr_kbps cannot be greater than min_dl_shaper_rate_kbps. Exiting script."; exit 1; }
