@@ -172,7 +172,7 @@ test_bash_requirement()
 
 test_setup_tmp_handoff_guard()
 {
-	local tmp unsafe_target
+	local tmp unsafe_target create_line cleanup_line download_line
 
 	tmp=$(make_tmp_dir)
 	unsafe_target="${tmp}/must-survive"
@@ -181,6 +181,10 @@ test_setup_tmp_handoff_guard()
 	assert_failure "installer rejects ambient temporary path" setup_tmp_is_safe "${tmp}"
 	assert_failure "installer rejects broad temporary path" setup_tmp_is_safe /tmp
 	[[ -f "${unsafe_target}" ]] || fail "handoff guard touched an external target"
+	create_line=$(awk '/tmp=\$\(mktemp -d \/tmp\/cake-autorate-setup\.XXXXXXXXXX\)/ { print NR; exit }' "${repo_dir}/setup.sh")
+	cleanup_line=$(awk -v start="${create_line}" 'NR > start && /trap .*rm -rf/ { print NR; exit }' "${repo_dir}/setup.sh")
+	download_line=$(awk -v start="${create_line}" 'NR > start && /download_url/ { print NR; exit }' "${repo_dir}/setup.sh")
+	[[ -n ${create_line} && -n ${cleanup_line} && -n ${download_line} && ${create_line} -lt ${cleanup_line} && ${cleanup_line} -lt ${download_line} ]] || fail "installer does not arm temporary cleanup before download"
 
 	ok "installer temporary handoff guard"
 }

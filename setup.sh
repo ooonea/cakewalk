@@ -212,6 +212,7 @@ main() {
 	if [ -z "${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP:-}" ]
 	then
 		tmp=$(mktemp -d /tmp/cake-autorate-setup.XXXXXXXXXX)
+		trap 'rm -rf "${tmp}"' EXIT INT TERM
 		archive="${tmp}/archive.tar.gz"
 		download_url "${SRC_DIR}/${commit}.tar.gz" > "${archive}"
 		tar -xozf "${archive}" -C "${tmp}"
@@ -244,8 +245,8 @@ main() {
 			printf >&2 'Invalid self-replacement temporary directory\n'
 			exit 1
 		fi
+		trap 'rm -rf "${tmp}"' EXIT INT TERM
 	fi
-	trap 'rm -rf "${tmp}"' EXIT INT TERM
 
 	# Compare local setup.sh with the one from the repository
 	if [ -e "${tmp}/setup.sh" ] && [ -e "${0}" ] && ! cmp -s "${0}" "${tmp}/setup.sh"
