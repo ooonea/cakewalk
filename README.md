@@ -8,7 +8,7 @@ fixes and hardening that never landed upstream — see [FORK.md](FORK.md).
 Credit for the original design belongs to lynxthecat, rany2 and the
 cake-autorate contributors.
 
-The original documentation follows.
+The original documentation follows, adapted where cakewalk differs.
 
 ---
 
@@ -35,23 +35,22 @@ no reliable means to adjust the bandwidth on the fly.
 
 **cake-autorate** presently supports installation on devices running
 on an [OpenWrt router](https://openwrt.org) or an
-[Asus Merlin router](https://www.asuswrt-merlin.net/).
+[Asus Merlin router](https://www.asuswrt-merlin.net/). A manual
+generic-Linux path is documented in [INSTALLATION](./INSTALLATION.md).
 
 ### Status
 
-This is the **development** (`master`) branch. New work on
-cake-autorate appears here. It is not guaranteed to be stable.
+This is the **development** (`main`) branch. New work on cakewalk
+appears here; it is not guaranteed to be stable.
 
-The **stable version** for production/every day use is
-<span id="version">3.2.1</span> available from the
-[v3.2 branch](https://github.com/lynxthecat/cake-autorate/tree/v3.2).
+The current development snapshot is
+<span id="version">3.5.0-cakewalk.0</span>. There is no stable
+cakewalk release yet; production installs should pin the exact Codeberg
+commit recorded by the installer in `version.txt`.
 
-If you like cake-autorate and can benefit from it, then please leave a
-⭐ (top right) and become a
-[stargazer](https://github.com/lynxthecat/cake-autorate/stargazers)!
-And feel free to post any feedback on the official OpenWrt thread
+Feedback on the original cake-autorate design can be posted on its
+official OpenWrt thread
 [here](https://forum.openwrt.org/t/cake-w-adaptive-bandwidth/191049).
-Thank you for your support.
 
 ## The Problem: CAKE on variable speed connections forces an unpalatable compromise
 

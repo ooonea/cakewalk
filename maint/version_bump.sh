@@ -16,8 +16,7 @@ git reset --hard
 
 version=${1:?}
 is_latest=${2:-1}
-EDITOR=${EDITOR:-nano}
-version_major=$(cut -d. -f1,2 <<<"${version}")
+EDITOR=${EDITOR:-nvim}
 
 if asker "Would you like to create a new changelog entry? (y/n) "
 then
@@ -36,10 +35,9 @@ fi
 
 if ((is_latest))
 then
-	if sed -E -e 's|(<span id=\"version\">)[^\<]+(</span>)|\1'"${version}"'\2|' \
-			  -e 's|\[v[^\<]+( branch[^\<]+tree\/v)([^\)]+)|\[v'${version_major}'\1'${version_major}'|' -i README.md
+	if sed -E 's|(<span id=\"version\">)[^<]+(</span>)|\1'"${version}"'\2|' -i README.md
 	then
-		echo Latest cake autorate version updated in README.md
+		echo Current cakewalk version updated in README.md
 	fi
 	( git add README.md
 	git commit -sm "Updated latest version in README.md to ${version}"; ) || :

@@ -168,6 +168,18 @@ test_bash_requirement()
 	ok "Bash 5 requirement"
 }
 
+test_project_version_metadata()
+{
+	local version
+
+	version=$(sed -n 's/^cake_autorate_version="\([^"]*\)"$/\1/p' "${repo_dir}/cake-autorate.sh")
+	assert_eq 3.5.0-cakewalk.0 "${version}" "runtime development version"
+	grep -Fq "<span id=\"version\">${version}</span>" "${repo_dir}/README.md" || fail "README version differs from runtime"
+	grep -Fq "Unreleased — Version ${version}" "${repo_dir}/CHANGELOG.md" || fail "changelog version differs from runtime"
+
+	ok "project version metadata"
+}
+
 test_pinger_field_validation()
 {
 	local -a command
@@ -1097,6 +1109,7 @@ EOF
 test_numeric_validation
 test_runtime_requires_flock
 test_bash_requirement
+test_project_version_metadata
 test_pinger_field_validation
 test_controller_clock_domains
 test_bytes_counter_validation

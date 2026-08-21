@@ -7,6 +7,16 @@ more about cake-autorate. This is the history of changes.
 
 <!-- Zep7RkGZ52|NEW ENTRY MARKER, DO NOT REMOVE -->
 
+## Unreleased — Version 3.5.0-cakewalk.0
+
+- Establish Codeberg `ooonea/cakewalk` as the canonical install source and
+  support exact commit pins.
+- Harden instance cleanup, process supervision, pinger identity, timing,
+  configuration bounds, logging, and counter recovery.
+- Make generic-Linux SQM teardown ownership-aware and make setup/uninstall
+  retries safe.
+- Add regression coverage and a reproducible repository check entrypoint.
+
 ## 2026-03-04 - Version 3.5.0
 
 - Introduce MQTT data export functionality
