@@ -653,6 +653,31 @@ test_worker_supervision_detects_exit()
 	ok "worker death supervision"
 }
 
+test_worker_supervision_ignores_dead_pingers()
+{
+	local required_worker pinger
+
+	declare -gA proc_pids
+	proc_pids=([main]=${BASHPID})
+	sleep 30 &
+	required_worker=${!}
+	proc_pids[monitor_achieved_rates]=${required_worker}
+	sleep 30 &
+	pinger=${!}
+	proc_pids[ping_0_pinger]=${pinger}
+
+	kill -TERM "${pinger}"
+	wait "${pinger}" 2>/dev/null || :
+	assert_success "dead pinger is left to the restart path" supervise_workers
+	grep -Fq $'stop_pingers\n\t\t\t\tstart_pingers' "${repo_dir}/cake-autorate.sh" || fail "dead pingers no longer have a restart path"
+
+	kill -TERM "${required_worker}"
+	wait "${required_worker}" 2>/dev/null || :
+	assert_failure "dead required worker remains fatal" supervise_workers
+
+	ok "pinger supervision and self-heal contract"
+}
+
 test_ping_worker_identity_and_group_cleanup()
 {
 	local tmp fake_bin original_path tagged fake_ping_pid test_main_fd
@@ -1252,6 +1277,7 @@ test_operational_bounds
 test_stopped_pinger_metadata_is_cleared
 test_pinger_keys_are_not_re_evaluated
 test_worker_supervision_detects_exit
+test_worker_supervision_ignores_dead_pingers
 test_ping_worker_identity_and_group_cleanup
 test_set_shaper_rate_with_fake_tc
 test_cake_framing_and_overhead

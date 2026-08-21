@@ -232,7 +232,7 @@ supervise_workers()
 
 	for worker in "${!proc_pids[@]}"
 	do
-		[[ ${worker} == main ]] && continue
+		[[ ${worker} == main || ${worker} == *_pinger ]] && continue
 		pid=${proc_pids[${worker}]}
 		if [[ ! ${pid} =~ ^[0-9]+$ ]] || ! kill -0 "${pid}" 2>/dev/null
 		then
