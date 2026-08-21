@@ -944,6 +944,14 @@ EOF
 	cat > "${fake_bin}/tc" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_TC_LOG}"
+if [[ $* == qdisc\ add\ root\ dev\ ifb-wan\ * && ${FAKE_TC_FAIL_DL_ADD:-0} == 1 ]]
+then
+	exit 1
+fi
+if [[ $* == 'qdisc del root dev wan' && ${FAKE_TC_FAIL_UL_DEL:-0} == 1 ]]
+then
+	exit 1
+fi
 case $* in
 	'qdisc show root dev wan') printf '%s\n' "${FAKE_TC_ROOT_OUTPUT:-qdisc cake ca1e: root}" ;;
 	'filter show dev wan parent ffff:') printf '%s' "${FAKE_TC_FILTER_OUTPUT:-}" ;;
@@ -969,6 +977,12 @@ EOF
 	[[ -e ${state}/primary/ifb ]] || fail "IFB ownership marker missing"
 	grep -Fxq 'qdisc add root dev wan handle ca1e: cake bandwidth 1000kbit nat dual-srchost' "${FAKE_TC_LOG}" || fail "upload qdisc lacks the owned handle"
 
+	cat > "${config}" <<'EOF'
+dl_if=wan
+ul_if=wan
+base_dl_shaper_rate_kbps=1000
+base_ul_shaper_rate_kbps=1000
+EOF
 	CAKE_AUTORATE_SQM_STATE_DIR=${state} assert_success "SQM setup stops owned objects" \
 		"${repo_dir}/sqm-setup.sh" stop "${config}"
 	grep -Fxq 'qdisc del root dev wan' "${FAKE_TC_LOG}" || fail "owned upload qdisc not removed"
@@ -976,11 +990,42 @@ EOF
 	grep -Fxq 'link del ifb-wan' "${FAKE_IP_LOG}" || fail "owned IFB not removed"
 	[[ ! -e ${state}/primary ]] || fail "SQM ownership state not removed after teardown"
 
+	cat > "${config}" <<'EOF'
+dl_if=ifb-wan
+ul_if=wan
+base_dl_shaper_rate_kbps=1000
+base_ul_shaper_rate_kbps=1000
+EOF
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/missing-config" assert_success "SQM setup restarts before config removal" \
+		"${repo_dir}/sqm-setup.sh" start "${config}"
+	rm "${config}"
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/missing-config" assert_success "SQM stop uses state after config removal" \
+		"${repo_dir}/sqm-setup.sh" stop "${config}"
+	[[ ! -e ${tmp}/missing-config/primary ]] || fail "missing-config teardown ownership state was not removed"
+	cat > "${config}" <<'EOF'
+dl_if=ifb-wan
+ul_if=wan
+base_dl_shaper_rate_kbps=1000
+base_ul_shaper_rate_kbps=1000
+EOF
+
 	: > "${FAKE_IP_LOG}"
 	: > "${FAKE_TC_LOG}"
 	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/unowned" assert_success "SQM stop ignores unowned objects" \
 		"${repo_dir}/sqm-setup.sh" stop "${config}"
 	[[ ! -s ${FAKE_IP_LOG} && ! -s ${FAKE_TC_LOG} ]] || fail "SQM stop touched unowned objects"
+
+	FAKE_TC_FAIL_DL_ADD=1
+	FAKE_TC_FAIL_UL_DEL=1
+	export FAKE_TC_FAIL_DL_ADD FAKE_TC_FAIL_UL_DEL
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/rollback" assert_failure "SQM setup reports a partial rollback" \
+		"${repo_dir}/sqm-setup.sh" start "${config}"
+	[[ -e ${tmp}/rollback/primary/ul-root ]] || fail "partial rollback discarded upload ownership state"
+	[[ -f ${tmp}/rollback/primary/interfaces ]] || fail "partial rollback discarded interface ownership state"
+	unset FAKE_TC_FAIL_DL_ADD FAKE_TC_FAIL_UL_DEL
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/rollback" assert_success "SQM stop retries a partial rollback" \
+		"${repo_dir}/sqm-setup.sh" stop "${config}"
+	[[ ! -e ${tmp}/rollback/primary ]] || fail "retried rollback ownership state was not removed"
 
 	mkdir -p "${state}/primary"
 	printf '%s\n%s\n' wan ifb-wan > "${state}/primary/interfaces"
@@ -1003,8 +1048,8 @@ base_ul_shaper_rate_kbps=1000
 EOF
 	: > "${FAKE_IP_LOG}"
 	: > "${FAKE_TC_LOG}"
-	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/same" assert_failure "SQM rejects matching interfaces before teardown" \
-		"${repo_dir}/sqm-setup.sh" stop "${tmp}/config.same.sh"
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/same" assert_failure "SQM rejects matching interfaces before setup" \
+		"${repo_dir}/sqm-setup.sh" start "${tmp}/config.same.sh"
 	[[ ! -s ${FAKE_IP_LOG} && ! -s ${FAKE_TC_LOG} ]] || fail "invalid interfaces reached a network command"
 	PATH=${saved_path}
 

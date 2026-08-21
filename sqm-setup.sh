@@ -35,11 +35,6 @@ case "${1:-}" in
 esac
 config=${1:-${script_dir}/config.primary.sh}
 
-if [[ ! -f ${config} ]]; then
-	printf >&2 'sqm-setup.sh: config not found: %s\n' "${config}"
-	exit 1
-fi
-
 config_basename=${config##*/}
 if [[ ! ${config_basename} =~ ^config\.([A-Za-z0-9_-]+)\.sh$ ]]
 then
@@ -47,40 +42,6 @@ then
 	exit 1
 fi
 instance_id=${BASH_REMATCH[1]}
-
-# Pull dl_if / ul_if and the base rates from defaults + instance config.
-# shellcheck source=/dev/null
-. "${script_dir}/defaults.sh"
-# shellcheck source=/dev/null
-. "${config}"
-
-: "${dl_if:?sqm-setup.sh: dl_if is not set in the config}"
-: "${ul_if:?sqm-setup.sh: ul_if is not set in the config}"
-: "${base_dl_shaper_rate_kbps:?sqm-setup.sh: base_dl_shaper_rate_kbps is not set}"
-: "${base_ul_shaper_rate_kbps:?sqm-setup.sh: base_ul_shaper_rate_kbps is not set}"
-
-if [[ ${dl_if} == "${ul_if}" ]]
-then
-	printf >&2 'sqm-setup.sh: dl_if and ul_if must name different interfaces\n'
-	exit 1
-fi
-if [[ ! ${dl_if} =~ ^[A-Za-z0-9_.:-]+$ || ! ${ul_if} =~ ^[A-Za-z0-9_.:-]+$ ]]
-then
-	printf >&2 'sqm-setup.sh: interface names contain unsupported characters\n'
-	exit 1
-fi
-if [[ ! ${base_dl_shaper_rate_kbps} =~ ^[1-9][0-9]*$ || ! ${base_ul_shaper_rate_kbps} =~ ^[1-9][0-9]*$ ]]
-then
-	printf >&2 'sqm-setup.sh: base shaper rates must be positive decimal integers\n'
-	exit 1
-fi
-
-# Optional per-direction extra CAKE keywords. The defaults give full per-host
-# fairness on a NAT router, like OpenWrt SQM: "nat" resolves the inside hosts,
-# and dual-srchost (egress) / dual-dsthost (ingress) share bandwidth per LAN
-# host, so no single host can starve the others. Override in the config if needed.
-sqm_dl_cake_opts=${sqm_dl_cake_opts:-nat dual-dsthost ingress}
-sqm_ul_cake_opts=${sqm_ul_cake_opts:-nat dual-srchost}
 
 sqm_state_root=${CAKE_AUTORATE_SQM_STATE_DIR:-/run/cake-autorate/sqm}
 sqm_state_path="${sqm_state_root}/${instance_id}"
@@ -90,6 +51,49 @@ sqm_filter_pref=49152
 created_ul_root=0
 created_ingress=0
 created_ifb=0
+
+if [[ ${action} == start ]]
+then
+	if [[ ! -f ${config} ]]
+	then
+		printf >&2 'sqm-setup.sh: config not found: %s\n' "${config}"
+		exit 1
+	fi
+
+	# Pull dl_if / ul_if and the base rates from defaults + instance config.
+	# shellcheck source=/dev/null
+	. "${script_dir}/defaults.sh"
+	# shellcheck source=/dev/null
+	. "${config}"
+
+	: "${dl_if:?sqm-setup.sh: dl_if is not set in the config}"
+	: "${ul_if:?sqm-setup.sh: ul_if is not set in the config}"
+	: "${base_dl_shaper_rate_kbps:?sqm-setup.sh: base_dl_shaper_rate_kbps is not set}"
+	: "${base_ul_shaper_rate_kbps:?sqm-setup.sh: base_ul_shaper_rate_kbps is not set}"
+
+	if [[ ${dl_if} == "${ul_if}" ]]
+	then
+		printf >&2 'sqm-setup.sh: dl_if and ul_if must name different interfaces\n'
+		exit 1
+	fi
+	if [[ ! ${dl_if} =~ ^[A-Za-z0-9_.:-]+$ || ! ${ul_if} =~ ^[A-Za-z0-9_.:-]+$ ]]
+	then
+		printf >&2 'sqm-setup.sh: interface names contain unsupported characters\n'
+		exit 1
+	fi
+	if [[ ! ${base_dl_shaper_rate_kbps} =~ ^[1-9][0-9]*$ || ! ${base_ul_shaper_rate_kbps} =~ ^[1-9][0-9]*$ ]]
+	then
+		printf >&2 'sqm-setup.sh: base shaper rates must be positive decimal integers\n'
+		exit 1
+	fi
+
+	# Optional per-direction extra CAKE keywords. The defaults give full per-host
+	# fairness on a NAT router, like OpenWrt SQM: "nat" resolves the inside hosts,
+	# and dual-srchost (egress) / dual-dsthost (ingress) share bandwidth per LAN
+	# host, so no single host can starve the others. Override in the config if needed.
+	sqm_dl_cake_opts=${sqm_dl_cake_opts:-nat dual-dsthost ingress}
+	sqm_ul_cake_opts=${sqm_ul_cake_opts:-nat dual-srchost}
+fi
 
 write_state()
 {
@@ -107,13 +111,39 @@ record_ownership()
 
 rollback_current()
 {
+	local command_status status=0
+
 	trap - ERR
-	((created_ingress)) && tc filter del dev "${ul_if}" parent ffff: protocol all pref "${sqm_filter_pref}" u32 2>/dev/null || true
-	((created_ingress)) && tc qdisc del dev "${ul_if}" ingress 2>/dev/null || true
-	((created_ul_root)) && tc qdisc del root dev "${ul_if}" 2>/dev/null || true
-	((created_ifb)) && ip link del "${dl_if}" 2>/dev/null || true
-	rm -rf "${sqm_state_path}"
-	rmdir "${sqm_state_root}" 2>/dev/null || true
+	set +e
+	if ((created_ul_root))
+	then
+		record_ownership ul-root
+		command_status=${?}
+		((command_status == 0)) || status=1
+	fi
+	if ((created_ingress))
+	then
+		record_ownership ingress
+		command_status=${?}
+		((command_status == 0)) || status=1
+	fi
+	if ((created_ifb))
+	then
+		record_ownership ifb
+		command_status=${?}
+		((command_status == 0)) || status=1
+	fi
+	if ((status == 0))
+	then
+		teardown_managed
+		status=${?}
+	fi
+	set -e
+	if ((status != 0))
+	then
+		printf >&2 'sqm-setup.sh: rollback is incomplete; retained ownership state for a later retry\n'
+	fi
+	return 0
 }
 
 teardown_managed()
@@ -139,17 +169,28 @@ teardown_managed()
 	if [[ -e ${sqm_state_path}/ingress ]]
 	then
 		tc filter del dev "${managed_ul_if}" parent ffff: protocol all pref "${sqm_filter_pref}" u32 2>/dev/null || true
-		filter_output=$(tc filter show dev "${managed_ul_if}" parent ffff: 2>/dev/null) || filter_output=
+		if ! filter_output=$(tc filter show dev "${managed_ul_if}" parent ffff: 2>/dev/null)
+		then
+			printf >&2 'sqm-setup.sh: could not inspect the marked ingress filter on %s; retaining ownership state\n' "${managed_ul_if}"
+			status=1
+			filter_output=unknown
+		fi
 		if grep -Eq "(^|[[:space:]])pref[[:space:]]+${sqm_filter_pref}([[:space:]]|$)" <<< "${filter_output}"
 		then
 			printf >&2 'sqm-setup.sh: marked ingress filter on %s could not be removed\n' "${managed_ul_if}"
 			status=1
-		else
-			rm -f "${sqm_state_path}/ingress"
-		fi
-		if [[ -z ${filter_output} ]]
+		elif [[ -z ${filter_output} ]]
 		then
-			tc qdisc del dev "${managed_ul_if}" ingress 2>/dev/null || true
+			if tc qdisc del dev "${managed_ul_if}" ingress 2>/dev/null
+			then
+				rm -f "${sqm_state_path}/ingress"
+			else
+				printf >&2 'sqm-setup.sh: empty marked ingress qdisc on %s could not be removed\n' "${managed_ul_if}"
+				status=1
+			fi
+		elif [[ ${filter_output} != unknown ]]
+		then
+			rm -f "${sqm_state_path}/ingress"
 		fi
 	fi
 
