@@ -97,6 +97,9 @@ eval "$(extract_function set_shaper_rate)"
 eval "$(extract_function export_proc_pids)"
 eval "$(extract_function acquire_startup_lock)"
 eval "$(extract_function release_startup_lock)"
+eval "$(extract_function runtime_path_is_safe)"
+eval "$(extract_function derive_instance_run_path)"
+eval "$(extract_function cleanup_and_killall)"
 
 write_fake_stat()
 {
@@ -384,6 +387,57 @@ test_startup_lock_unsafe_path_fails_loud()
 	ok "startup lock unsafe path fails loud"
 }
 
+test_runtime_path_safety()
+{
+	local tmp status
+
+	tmp=$(make_tmp_dir)
+	run_parent_path="${tmp}/run"
+	run_path=
+	unset instance_id
+
+	assert_success "valid instance filename accepted" derive_instance_run_path "/tmp/config.primary-1.sh"
+	assert_eq primary-1 "${instance_id}" "instance identifier derived from basename"
+	assert_eq "${run_parent_path}/primary-1" "${run_path}" "runtime path derived as strict child"
+	assert_success "derived runtime path accepted" runtime_path_is_safe
+	assert_failure "empty instance rejected" derive_instance_run_path "/tmp/config..sh"
+	assert_failure "nested instance rejected" derive_instance_run_path "/tmp/config.a/b.sh"
+	assert_failure "suffix after config filename rejected" derive_instance_run_path "/tmp/config.primary.sh.extra"
+
+	mkdir -p "${run_parent_path}"
+	: > "${run_parent_path}/sentinel"
+	run_path=${run_parent_path}
+	instance_id=
+	declare -gA proc_pids=() pinger_pids=()
+	log_file_buffer_timeout_ms=0
+	set +e
+	(
+		terminate() { :; }
+		sleep_s() { :; }
+		cleanup_and_killall 0
+	)
+	status=${?}
+	set -e
+	assert_eq 0 "${status}" "cleanup with unsafe parent exits cleanly"
+	[[ -f ${run_parent_path}/sentinel ]] || fail "unsafe cleanup removed runtime parent"
+
+	instance_id=primary
+	run_path="${run_parent_path}/${instance_id}"
+	mkdir "${run_path}"
+	set +e
+	(
+		terminate() { :; }
+		sleep_s() { :; }
+		cleanup_and_killall 0
+	)
+	status=${?}
+	set -e
+	assert_eq 0 "${status}" "cleanup with safe child exits cleanly"
+	[[ ! -e ${run_path} ]] || fail "safe instance runtime path was not removed"
+
+	ok "runtime path safety"
+}
+
 test_set_shaper_rate_with_fake_tc()
 {
 	local tmp fake_bin tc_log status
@@ -630,6 +684,7 @@ test_atomic_proc_metadata_with_fake_proc
 test_startup_lock_kernel_semantics
 test_startup_lock_concurrency_and_sigkill_release
 test_startup_lock_unsafe_path_fails_loud
+test_runtime_path_safety
 test_set_shaper_rate_with_fake_tc
 test_terminate_reaps_child
 test_launcher_fail_fast

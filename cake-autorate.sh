@@ -112,6 +112,24 @@ trap 'cleanup_and_killall 0' INT
 trap 'cleanup_and_killall 0' TERM
 trap 'cleanup_and_killall "$?"' EXIT
 
+runtime_path_is_safe()
+{
+	[[ -n ${run_parent_path:-} && -n ${instance_id:-} &&
+		${instance_id} =~ ^[A-Za-z0-9_-]+$ &&
+		${run_path:-} == "${run_parent_path}/${instance_id}" &&
+		${run_path} != "${run_parent_path}" ]]
+}
+
+derive_instance_run_path()
+{
+	local config_basename=${1##*/}
+
+	[[ ${config_basename} =~ ^config\.([A-Za-z0-9_-]+)\.sh$ ]] || return 1
+	instance_id=${BASH_REMATCH[1]}
+	run_path="${run_parent_path}/${instance_id}"
+	runtime_path_is_safe
+}
+
 cleanup_and_killall()
 {	
 	local exit_status=${1:-0} config_path_for_log=${config_path:-unknown}
@@ -141,7 +159,13 @@ cleanup_and_killall()
 	((terminate_maintain_log_file_timeout_ms=log_file_buffer_timeout_ms+500))
 	terminate "${proc_pids['maintain_log_file']:-}" "${terminate_maintain_log_file_timeout_ms}"
 
-	[[ -n ${run_path:-} && -d ${run_path} ]] && rm -r "${run_path}"
+	if runtime_path_is_safe
+	then
+		[[ -d ${run_path} ]] && rm -r "${run_path}"
+	elif [[ -n ${run_path:-} ]]
+	then
+		log_msg "ERROR" "Refusing to remove unsafe runtime path: ${run_path}"
+	fi
 	[[ -n ${startup_lock_fd:-} ]] && release_startup_lock
 	# The flock backing file intentionally remains under run_parent_path. It is
 	# not lock state: the kernel releases the advisory lock automatically when
@@ -536,6 +560,8 @@ release_startup_lock()
 prepare_run_path()
 {
 	local running_main_pid
+
+	runtime_path_is_safe || { log_msg "ERROR" "Refusing unsafe runtime path '${run_path:-unset}'. Exiting script."; exit 1; }
 
 	( umask 077 && mkdir -p "${run_parent_path}" ) || { log_msg "ERROR" "Failed to create run parent path '${run_parent_path}'. Exiting script."; exit 1; }
 
@@ -1060,7 +1086,7 @@ log_file_path=/var/log/cake-autorate.log
 # *** WARNING: take great care if attempting to alter the run_path! ***
 # *** cake-autorate issues mkdir -p ${run_path} and rm -r ${run_path} on exit. ***
 run_parent_path=/var/run/cake-autorate
-run_path=${run_parent_path}
+run_path=
 
 # cake-autorate first argument is config file path
 if [[ -n ${1-} ]]
@@ -1122,11 +1148,9 @@ unset valid_config_entries user_config config_error_count key
 # shellcheck source=config.primary.sh
 . "${config_path}"
 
-if [[ ${config_path} =~ config\.(.*)\.sh ]]
+if ! derive_instance_run_path "${config_path}"
 then
-	instance_id=${BASH_REMATCH[1]} run_path="${run_parent_path}/${instance_id}"
-else
-	log_msg "ERROR" "Instance identifier 'X' set by config.X.sh cannot be empty. Exiting now."
+	log_msg "ERROR" "Config filename must match config.X.sh with a non-empty alphanumeric, underscore or hyphen instance identifier. Exiting now."
 	exit 1
 fi
 
