@@ -5,7 +5,7 @@
 # in dependence on: a) receive and transmit transfer rates; and b) latency
 # (or can just be used to monitor and log transfer rates and latency)
 
-# requires: bash; and one of the supported ping binaries
+# requires: bash >= 5.0; and one of the supported ping binaries
 
 # each cake-autorate instance must be configured using a corresponding config file
 
@@ -17,9 +17,9 @@
 
 cake_autorate_version="3.3.0-PRERELEASE"
 
-if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3)))
+if ((BASH_VERSINFO[0] < 5))
 then
-	printf '%s\n' "ERROR: cake-autorate requires bash >= 4.3." >&2
+	printf '%s\n' "ERROR: cake-autorate requires bash >= 5.0." >&2
 	exit 1
 fi
 

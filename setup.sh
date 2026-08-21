@@ -138,6 +138,11 @@ main() {
 		exit_now=1
 	fi
 	[ "${exit_now}" -ge 1 ] && exit "${exit_now}"
+	if ! bash -c '((BASH_VERSINFO[0] >= 5))'
+	then
+		printf >&2 "Bash 5.0 or newer is required; please upgrade Bash and rerun the script.\n"
+		exit 1
+	fi
 
 	# Check for fping, which is required by default
 	if ! type "fping" >/dev/null 2>&1; then

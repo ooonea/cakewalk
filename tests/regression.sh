@@ -151,6 +151,16 @@ test_runtime_requires_flock()
 	ok "runtime flock dependency"
 }
 
+test_bash_requirement()
+{
+	grep -Fqx 'if ((BASH_VERSINFO[0] < 5))' "${repo_dir}/cake-autorate.sh" || fail "daemon Bash 5 guard missing"
+	grep -Eq '^[[:space:]]*if \(\(BASH_VERSINFO\[0\] < 5\)\)$' "${repo_dir}/launcher.sh.template" || fail "launcher Bash 5 guard missing"
+	grep -Fq "bash -c '((BASH_VERSINFO[0] >= 5))'" "${repo_dir}/setup.sh" || fail "installer Bash 5 guard missing"
+	grep -Fq 'Bash 5.0 or newer' "${repo_dir}/INSTALLATION.md" || fail "installation Bash 5 documentation missing"
+
+	ok "Bash 5 requirement"
+}
+
 test_pinger_field_validation()
 {
 	local -a command
@@ -750,6 +760,7 @@ EOF
 
 test_numeric_validation
 test_runtime_requires_flock
+test_bash_requirement
 test_pinger_field_validation
 test_bytes_counter_validation
 test_atomic_proc_metadata_with_fake_proc
