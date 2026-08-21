@@ -971,6 +971,7 @@ test_installation_documentation_matches_runtime()
 	grep -Fq 'Bash 5.0 or newer' "${repo_dir}/INSTALLATION.md" || fail "generic-Linux Bash requirement is stale"
 	grep -Fq 'opkg install coreutils-mktemp jsonfilter bash flock fping' "${repo_dir}/INSTALLATION.md" || fail "Entware flock package is undocumented"
 	grep -Fq 'unmarked or' "${repo_dir}/INSTALLATION.md" || fail "SQM ownership boundary is undocumented"
+	grep -Fq 'On the first start' "${repo_dir}/INSTALLATION.md" || fail "SQM first-start fail-safe is undocumented"
 	grep -Fq 'output_summary_stats=1' "${repo_dir}/INSTALLATION.md" || fail "MQTT logging prerequisite is undocumented"
 	! grep -Fq '/tmp/cake-autorate.log' "${repo_dir}/defaults.sh" || fail "default log path comment is stale"
 
@@ -1006,7 +1007,7 @@ EOF
 
 test_sqm_setup_ownership()
 {
-	local tmp fake_bin config state saved_path
+	local tmp fake_bin config state saved_path long_instance long_config
 
 	tmp=$(make_tmp_dir)
 	fake_bin="${tmp}/bin"
@@ -1022,6 +1023,10 @@ EOF
 	cat > "${fake_bin}/ip" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_IP_LOG}"
+if [[ $* == link\ set\ dev\ ifb-wan\ alias\ * && ${FAKE_IP_FAIL_ALIAS:-0} == 1 ]]
+then
+	exit 1
+fi
 case $* in
 	'link show wan') exit 0 ;;
 	'-d link show dev ifb-wan') printf '%s\n' '    ifb numtxqueues 1 numrxqueues 1'; exit 0 ;;
@@ -1031,6 +1036,10 @@ EOF
 	cat > "${fake_bin}/tc" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_TC_LOG}"
+if [[ $* == qdisc\ add\ root\ dev\ wan\ * && ${FAKE_TC_FAIL_UL_ADD:-0} == 1 ]]
+then
+	exit 1
+fi
 if [[ $* == qdisc\ add\ root\ dev\ ifb-wan\ * && ${FAKE_TC_FAIL_DL_ADD:-0} == 1 ]]
 then
 	exit 1
@@ -1041,6 +1050,7 @@ then
 fi
 case $* in
 	'qdisc show root dev wan') printf '%s\n' "${FAKE_TC_ROOT_OUTPUT:-qdisc cake ca1e: root}" ;;
+	'qdisc show dev wan ingress') printf '%s' "${FAKE_TC_INGRESS_OUTPUT-qdisc ingress ffff: parent ffff:fff1}" ;;
 	'filter show dev wan parent ffff:') printf '%s' "${FAKE_TC_FILTER_OUTPUT:-}" ;;
 esac
 EOF
@@ -1102,6 +1112,42 @@ EOF
 		"${repo_dir}/sqm-setup.sh" stop "${config}"
 	[[ ! -s ${FAKE_IP_LOG} && ! -s ${FAKE_TC_LOG} ]] || fail "SQM stop touched unowned objects"
 
+	mkdir -p "${tmp}/absent/primary"
+	printf '%s\n%s\n' wan ifb-wan > "${tmp}/absent/primary/interfaces"
+	: > "${tmp}/absent/primary/ul-root"
+	: > "${tmp}/absent/primary/ingress"
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	FAKE_TC_ROOT_OUTPUT='qdisc noqueue 0: root refcnt 2'
+	FAKE_TC_INGRESS_OUTPUT=
+	export FAKE_TC_ROOT_OUTPUT FAKE_TC_INGRESS_OUTPUT
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/absent" assert_success "SQM teardown accepts already absent owned qdiscs" \
+		"${repo_dir}/sqm-setup.sh" stop "${config}"
+	! grep -Eq '^qdisc del (root dev wan|dev wan ingress)$' "${FAKE_TC_LOG}" || fail "SQM teardown deleted an already absent qdisc"
+	[[ ! -e ${tmp}/absent/primary ]] || fail "absent qdisc ownership state was not removed"
+	unset FAKE_TC_ROOT_OUTPUT FAKE_TC_INGRESS_OUTPUT
+
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	FAKE_IP_FAIL_ALIAS=1
+	export FAKE_IP_FAIL_ALIAS
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/alias-failure" assert_failure "SQM setup rolls back an IFB whose alias failed" \
+		"${repo_dir}/sqm-setup.sh" start "${config}"
+	grep -Fxq 'link del ifb-wan' "${FAKE_IP_LOG}" || fail "alias failure left the transaction-local IFB behind"
+	grep -Fxq 'qdisc del root dev wan' "${FAKE_TC_LOG}" || fail "alias failure did not roll back the upload qdisc"
+	[[ ! -e ${tmp}/alias-failure/primary ]] || fail "alias failure retained stale ownership state"
+	unset FAKE_IP_FAIL_ALIAS
+
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	FAKE_TC_FAIL_UL_ADD=1
+	export FAKE_TC_FAIL_UL_ADD
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/first-start" assert_failure "SQM first start preserves an unmarked root qdisc" \
+		"${repo_dir}/sqm-setup.sh" start "${config}"
+	! grep -Eq '^qdisc del root dev wan$' "${FAKE_TC_LOG}" || fail "first start deleted an unmarked root qdisc"
+	[[ ! -e ${tmp}/first-start/primary ]] || fail "failed first start retained empty ownership state"
+	unset FAKE_TC_FAIL_UL_ADD
+
 	FAKE_TC_FAIL_DL_ADD=1
 	FAKE_TC_FAIL_UL_DEL=1
 	export FAKE_TC_FAIL_DL_ADD FAKE_TC_FAIL_UL_DEL
@@ -1119,13 +1165,35 @@ EOF
 	: > "${state}/primary/ul-root"
 	: > "${FAKE_IP_LOG}"
 	: > "${FAKE_TC_LOG}"
-	FAKE_TC_ROOT_OUTPUT='qdisc fq_codel 0: root'
+	FAKE_TC_ROOT_OUTPUT='qdisc fq_codel 1234: root'
 	export FAKE_TC_ROOT_OUTPUT
 	CAKE_AUTORATE_SQM_STATE_DIR=${state} assert_failure "SQM refuses a foreign marked upload qdisc" \
 		"${repo_dir}/sqm-setup.sh" stop "${config}"
 	! grep -Fxq 'qdisc del root dev wan' "${FAKE_TC_LOG}" || fail "foreign upload qdisc was removed"
 	[[ -e ${state}/primary/ul-root ]] || fail "refused upload ownership state was discarded"
 	unset FAKE_TC_ROOT_OUTPUT
+
+	mkdir -p "${tmp}/foreign-ingress/primary"
+	printf '%s\n%s\n' wan ifb-wan > "${tmp}/foreign-ingress/primary/interfaces"
+	: > "${tmp}/foreign-ingress/primary/ingress"
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	FAKE_TC_INGRESS_OUTPUT='qdisc clsact ffff: parent ffff:fff1'
+	export FAKE_TC_INGRESS_OUTPUT
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/foreign-ingress" assert_failure "SQM refuses a foreign marked ingress qdisc" \
+		"${repo_dir}/sqm-setup.sh" stop "${config}"
+	! grep -Eq '^(filter del dev wan|qdisc del dev wan ingress)' "${FAKE_TC_LOG}" || fail "foreign ingress qdisc was modified"
+	[[ -e ${tmp}/foreign-ingress/primary/ingress ]] || fail "refused ingress ownership state was discarded"
+	unset FAKE_TC_INGRESS_OUTPUT
+
+	printf -v long_instance '%0240d' 0
+	long_config="${tmp}/config.${long_instance}.sh"
+	cp "${config}" "${long_config}"
+	: > "${FAKE_IP_LOG}"
+	: > "${FAKE_TC_LOG}"
+	CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/long-alias" assert_failure "SQM rejects an oversized IFB alias before setup" \
+		"${repo_dir}/sqm-setup.sh" start "${long_config}"
+	[[ ! -s ${FAKE_IP_LOG} && ! -s ${FAKE_TC_LOG} ]] || fail "oversized IFB alias reached a network command"
 
 	cat > "${tmp}/config.same.sh" <<'EOF'
 dl_if=wan
@@ -1141,6 +1209,89 @@ EOF
 	PATH=${saved_path}
 
 	ok "SQM setup ownership and interface validation"
+}
+
+test_sqm_setup_netns()
+{
+	local tmp
+
+	if ! command -v unshare >/dev/null 2>&1 || ! command -v ip >/dev/null 2>&1 || ! command -v tc >/dev/null 2>&1 ||
+		! unshare --user --map-root-user --net true 2>/dev/null
+	then
+		ok "SQM setup real netns skipped (user namespaces unavailable)"
+		return
+	fi
+	if ! unshare --user --map-root-user --net bash -c '
+		set -e
+		ip link add wan type dummy
+		ip link set wan up
+		ip link add ifb-wan type ifb
+		tc qdisc add root dev wan handle ca1e: cake bandwidth 1mbit
+	' 2>/dev/null
+	then
+		ok "SQM setup real netns skipped (CAKE or IFB unavailable)"
+		return
+	fi
+
+	tmp=$(make_tmp_dir)
+	if ! unshare --user --map-root-user --net bash -s -- "${repo_dir}" "${tmp}" <<'EOF'
+set -euo pipefail
+
+repo_dir=${1}
+tmp=${2}
+config="${tmp}/config.primary.sh"
+state="${tmp}/state"
+cat > "${config}" <<'CONFIG'
+dl_if=ifb-wan
+ul_if=wan
+base_dl_shaper_rate_kbps=1000
+base_ul_shaper_rate_kbps=1000
+CONFIG
+
+ip link add wan type dummy
+ip link set wan up
+CAKE_AUTORATE_SQM_STATE_DIR=${state} "${repo_dir}/sqm-setup.sh" start "${config}"
+tc qdisc del dev wan ingress
+tc qdisc del root dev wan
+CAKE_AUTORATE_SQM_STATE_DIR=${state} "${repo_dir}/sqm-setup.sh" stop "${config}"
+[[ ! -e ${state}/primary ]]
+! ip link show dev ifb-wan >/dev/null 2>&1
+
+foreign_config="${tmp}/config.foreign.sh"
+cat > "${foreign_config}" <<'CONFIG'
+dl_if=ifb-foreign
+ul_if=wan-foreign
+base_dl_shaper_rate_kbps=1000
+base_ul_shaper_rate_kbps=1000
+CONFIG
+ip link add wan-foreign type dummy
+ip link set wan-foreign up
+tc qdisc add root dev wan-foreign handle 1234: fq_codel
+if CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/foreign-state" "${repo_dir}/sqm-setup.sh" start "${foreign_config}" 2>/dev/null
+then
+	exit 1
+fi
+tc qdisc show root dev wan-foreign | grep -Eq '^qdisc fq_codel 1234:'
+[[ ! -e ${tmp}/foreign-state/foreign ]]
+
+mkdir -p "${tmp}/stale/foreign"
+printf '%s\n%s\n' wan-foreign ifb-foreign > "${tmp}/stale/foreign/interfaces"
+: > "${tmp}/stale/foreign/ul-root"
+: > "${tmp}/stale/foreign/ingress"
+tc qdisc add dev wan-foreign handle ffff: clsact
+if CAKE_AUTORATE_SQM_STATE_DIR="${tmp}/stale" "${repo_dir}/sqm-setup.sh" stop "${foreign_config}" 2>/dev/null
+then
+	exit 1
+fi
+tc qdisc show root dev wan-foreign | grep -Eq '^qdisc fq_codel 1234:'
+tc qdisc show dev wan-foreign ingress | grep -Eq '^qdisc clsact ffff:'
+[[ -e ${tmp}/stale/foreign/ul-root && -e ${tmp}/stale/foreign/ingress ]]
+EOF
+	then
+		fail "SQM setup real netns regression"
+	fi
+
+	ok "SQM setup real netns teardown and foreign-qdisc safety"
 }
 
 test_terminate_reaps_child()
@@ -1312,6 +1463,7 @@ test_installation_documentation_matches_runtime
 test_log_timeout_millisecond_precision
 test_mqtt_configuration_is_external
 test_sqm_setup_ownership
+test_sqm_setup_netns
 test_terminate_reaps_child
 test_launcher_fail_fast
 test_launcher_child_success

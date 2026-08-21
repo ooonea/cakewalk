@@ -347,9 +347,10 @@ cd /opt/cake-autorate
 The helper creates an egress CAKE qdisc on `ul_if` and an IFB ingress CAKE
 qdisc on `dl_if`, using the base rates and `sqm_*_cake_opts` from the same
 configuration. It records and verifies ownership before teardown: unmarked or
-identity-mismatched network objects are never removed. Before the first start,
-remove or migrate any pre-existing qdisc/IFB topology deliberately; the helper
-will not adopt it implicitly.
+identity-mismatched network objects are never removed, while a marked object
+that is already absent is treated as successfully removed. On the first start
+there is no ownership state: the helper will neither adopt nor remove a
+pre-existing qdisc/IFB topology, so remove or migrate it deliberately first.
 
 Stop the runtime before tearing down the objects it created:
 

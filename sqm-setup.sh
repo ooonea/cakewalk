@@ -48,9 +48,6 @@ sqm_state_path="${sqm_state_root}/${instance_id}"
 sqm_interfaces_state="${sqm_state_path}/interfaces"
 sqm_qdisc_handle=ca1e:
 sqm_filter_pref=49152
-created_ul_root=0
-created_ingress=0
-created_ifb=0
 
 if [[ ${action} == start ]]
 then
@@ -93,6 +90,17 @@ then
 	# host, so no single host can starve the others. Override in the config if needed.
 	sqm_dl_cake_opts=${sqm_dl_cake_opts:-nat dual-dsthost ingress}
 	sqm_ul_cake_opts=${sqm_ul_cake_opts:-nat dual-srchost}
+	created_ul_root=0
+	created_ingress=0
+	created_ifb=0
+	ifb_alias_set=0
+	sqm_ifalias_max_length=255
+	sqm_ifb_alias="cakewalk-sqm:${instance_id}:${ul_if}:${dl_if}"
+	if ((${#sqm_ifb_alias} > sqm_ifalias_max_length))
+	then
+		printf >&2 'sqm-setup.sh: IFB alias exceeds the %s-byte kernel limit\n' "${sqm_ifalias_max_length}"
+		exit 1
+	fi
 fi
 
 write_state()
@@ -115,6 +123,17 @@ rollback_current()
 
 	trap - ERR
 	set +e
+	if ((created_ifb && !ifb_alias_set))
+	then
+		ip link del "${dl_if}" 2>/dev/null
+		command_status=${?}
+		if ((command_status == 0))
+		then
+			created_ifb=0
+		else
+			status=1
+		fi
+	fi
 	if ((created_ul_root))
 	then
 		record_ownership ul-root
@@ -148,7 +167,7 @@ rollback_current()
 
 teardown_managed()
 {
-	local managed_interfaces managed_ul_if managed_dl_if managed_ifb_alias qdisc_output filter_output status=0
+	local managed_interfaces managed_ul_if managed_dl_if managed_ifb_alias qdisc_output ingress_output filter_output status=0
 
 	[[ -d ${sqm_state_path} ]] || return 0
 	if [[ ! -f ${sqm_interfaces_state} ]]
@@ -168,36 +187,52 @@ teardown_managed()
 
 	if [[ -e ${sqm_state_path}/ingress ]]
 	then
-		tc filter del dev "${managed_ul_if}" parent ffff: protocol all pref "${sqm_filter_pref}" u32 2>/dev/null || true
-		if ! filter_output=$(tc filter show dev "${managed_ul_if}" parent ffff: 2>/dev/null)
+		if ! ingress_output=$(tc qdisc show dev "${managed_ul_if}" ingress 2>/dev/null)
 		then
-			printf >&2 'sqm-setup.sh: could not inspect the marked ingress filter on %s; retaining ownership state\n' "${managed_ul_if}"
+			printf >&2 'sqm-setup.sh: could not inspect the marked ingress qdisc on %s; retaining ownership state\n' "${managed_ul_if}"
 			status=1
-			filter_output=unknown
-		fi
-		if grep -Eq "(^|[[:space:]])pref[[:space:]]+${sqm_filter_pref}([[:space:]]|$)" <<< "${filter_output}"
-		then
-			printf >&2 'sqm-setup.sh: marked ingress filter on %s could not be removed\n' "${managed_ul_if}"
-			status=1
-		elif [[ -z ${filter_output} ]]
-		then
-			if tc qdisc del dev "${managed_ul_if}" ingress 2>/dev/null
-			then
-				rm -f "${sqm_state_path}/ingress"
-			else
-				printf >&2 'sqm-setup.sh: empty marked ingress qdisc on %s could not be removed\n' "${managed_ul_if}"
-				status=1
-			fi
-		elif [[ ${filter_output} != unknown ]]
+		elif [[ -z ${ingress_output} ]]
 		then
 			rm -f "${sqm_state_path}/ingress"
+		elif [[ ${ingress_output} =~ ^qdisc[[:space:]]+ingress[[:space:]]+ffff:([[:space:]]|$) ]]
+		then
+			tc filter del dev "${managed_ul_if}" parent ffff: protocol all pref "${sqm_filter_pref}" u32 2>/dev/null || true
+			if ! filter_output=$(tc filter show dev "${managed_ul_if}" parent ffff: 2>/dev/null)
+			then
+				printf >&2 'sqm-setup.sh: could not inspect the marked ingress filter on %s; retaining ownership state\n' "${managed_ul_if}"
+				status=1
+				filter_output=unknown
+			fi
+			if grep -Eq "(^|[[:space:]])pref[[:space:]]+${sqm_filter_pref}([[:space:]]|$)" <<< "${filter_output}"
+			then
+				printf >&2 'sqm-setup.sh: marked ingress filter on %s could not be removed\n' "${managed_ul_if}"
+				status=1
+			elif [[ -z ${filter_output} ]]
+			then
+				if tc qdisc del dev "${managed_ul_if}" ingress 2>/dev/null
+				then
+					rm -f "${sqm_state_path}/ingress"
+				else
+					printf >&2 'sqm-setup.sh: empty marked ingress qdisc on %s could not be removed\n' "${managed_ul_if}"
+					status=1
+				fi
+			elif [[ ${filter_output} != unknown ]]
+			then
+				rm -f "${sqm_state_path}/ingress"
+			fi
+		else
+			printf >&2 'sqm-setup.sh: marked ingress qdisc on %s no longer has the owned identity; refusing removal\n' "${managed_ul_if}"
+			status=1
 		fi
 	fi
 
 	if [[ -e ${sqm_state_path}/ul-root ]]
 	then
-		qdisc_output=$(tc qdisc show root dev "${managed_ul_if}" 2>/dev/null) || qdisc_output=
-		if [[ ${qdisc_output} =~ ^qdisc[[:space:]]+(cake_mq|cake)[[:space:]]+${sqm_qdisc_handle}([[:space:]]|$) ]]
+		if ! qdisc_output=$(tc qdisc show root dev "${managed_ul_if}" 2>/dev/null)
+		then
+			printf >&2 'sqm-setup.sh: could not inspect the marked upload qdisc on %s; retaining ownership state\n' "${managed_ul_if}"
+			status=1
+		elif [[ ${qdisc_output} =~ ^qdisc[[:space:]]+(cake_mq|cake)[[:space:]]+${sqm_qdisc_handle}([[:space:]]|$) ]]
 		then
 			if tc qdisc del root dev "${managed_ul_if}" 2>/dev/null
 			then
@@ -206,6 +241,9 @@ teardown_managed()
 				printf >&2 'sqm-setup.sh: marked upload qdisc on %s could not be removed\n' "${managed_ul_if}"
 				status=1
 			fi
+		elif [[ ${qdisc_output} =~ ^qdisc[[:space:]]+[^[:space:]]+[[:space:]]+0:[[:space:]]+root([[:space:]]|$) ]]
+		then
+			rm -f "${sqm_state_path}/ul-root"
 		else
 			printf >&2 'sqm-setup.sh: marked upload qdisc on %s no longer has the owned handle; refusing removal\n' "${managed_ul_if}"
 			status=1
@@ -270,7 +308,8 @@ case ${action} in
 		# Download: redirect WAN ingress into an IFB and shape that.
 		ip link add "${dl_if}" type ifb
 		created_ifb=1
-		ip link set dev "${dl_if}" alias "cakewalk-sqm:${instance_id}:${ul_if}:${dl_if}"
+		ip link set dev "${dl_if}" alias "${sqm_ifb_alias}"
+		ifb_alias_set=1
 		record_ownership ifb
 		ip link set "${dl_if}" up
 		tc qdisc add dev "${ul_if}" handle ffff: ingress
