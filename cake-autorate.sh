@@ -634,39 +634,20 @@ monitor_achieved_rates()
 	log_msg "DEBUG" "Starting: ${FUNCNAME[0]} with PID: ${BASHPID}"
 
 	compensated_monitor_achieved_rates_interval_us=${monitor_achieved_rates_interval_us}
-
-	read_bytes_counter "${rx_bytes_path}" prev_rx_bytes || prev_rx_bytes=0
-	read_bytes_counter "${tx_bytes_path}" prev_tx_bytes || prev_tx_bytes=0
-
-	sleep_duration_s=0 t_start_us=0 prev_t_start_us=0 elapsed_monitor_achieved_rates_interval_us=0
-	prev_t_start_us=$(monotonic_time_us) || prev_t_start_us=${EPOCHREALTIME/.}
-
 	declare -A achieved_rate_kbps load_percent
+	# shellcheck disable=SC2034  # state is passed by name to update_achieved_rate
+	prev_rx_bytes=0 prev_tx_bytes=0 prev_rx_time_us=0 prev_tx_time_us=0 rx_initialized=0 tx_initialized=0
+	t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
+	update_achieved_rate "${rx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_rx_bytes prev_rx_time_us rx_initialized 'achieved_rate_kbps[dl]' || :
+	update_achieved_rate "${tx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_tx_bytes prev_tx_time_us tx_initialized 'achieved_rate_kbps[ul]' || :
 
 	while :
 	do
 		t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
-		(( elapsed_monitor_achieved_rates_interval_us = t_start_us - prev_t_start_us ))
-		(( elapsed_monitor_achieved_rates_interval_us > 0 )) || elapsed_monitor_achieved_rates_interval_us=${compensated_monitor_achieved_rates_interval_us}
+		update_achieved_rate "${rx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_rx_bytes prev_rx_time_us rx_initialized 'achieved_rate_kbps[dl]' || :
+		update_achieved_rate "${tx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_tx_bytes prev_tx_time_us tx_initialized 'achieved_rate_kbps[ul]' || :
 
-		# read in rx/tx bytes file, and if this fails then set to prev_bytes
-		# this addresses interfaces going down and back up
-		read_bytes_counter "${rx_bytes_path}" rx_bytes || rx_bytes=${prev_rx_bytes}
-		read_bytes_counter "${tx_bytes_path}" tx_bytes || tx_bytes=${prev_tx_bytes}
-
-		((
-			achieved_rate_kbps[dl] = 8000*(rx_bytes - prev_rx_bytes) / elapsed_monitor_achieved_rates_interval_us,
-			achieved_rate_kbps[ul] = 8000*(tx_bytes - prev_tx_bytes) / elapsed_monitor_achieved_rates_interval_us,
-
-			achieved_rate_kbps[dl]<0 && (achieved_rate_kbps[dl]=0),
-			achieved_rate_kbps[ul]<0 && (achieved_rate_kbps[ul]=0),
-
-			prev_rx_bytes=rx_bytes,
-			prev_tx_bytes=tx_bytes,
-			prev_t_start_us=t_start_us,
-
-			compensated_monitor_achieved_rates_interval_us = monitor_achieved_rates_interval_us>(10*max_wire_packet_rtt_us) ? monitor_achieved_rates_interval_us : 10*max_wire_packet_rtt_us
-		))
+		(( compensated_monitor_achieved_rates_interval_us = monitor_achieved_rates_interval_us>(10*max_wire_packet_rtt_us) ? monitor_achieved_rates_interval_us : 10*max_wire_packet_rtt_us ))
 
 		printf "SARS %s %s\n" "${achieved_rate_kbps[dl]}" "${achieved_rate_kbps[ul]}" >&${main_fd}
 

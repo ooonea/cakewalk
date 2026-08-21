@@ -237,6 +237,36 @@ read_bytes_counter()
 	output_var=${counter_value}
 }
 
+update_achieved_rate()
+{
+	local path=${1} now_us=${2} fallback_interval_us=${3} current_bytes elapsed_us
+	local -n previous_bytes_ref=${4} previous_time_us_ref=${5} initialized_ref=${6} achieved_rate_kbps_ref=${7}
+
+	if ! read_bytes_counter "${path}" current_bytes
+	then
+		achieved_rate_kbps_ref=0
+		return 1
+	fi
+
+	if (( ! initialized_ref ))
+	then
+		previous_bytes_ref=${current_bytes}
+		previous_time_us_ref=${now_us}
+		initialized_ref=1
+		achieved_rate_kbps_ref=0
+		return 0
+	fi
+
+	(( elapsed_us = now_us - previous_time_us_ref ))
+	(( elapsed_us > 0 )) || elapsed_us=${fallback_interval_us}
+	((
+		achieved_rate_kbps_ref = 8000*(current_bytes - previous_bytes_ref) / elapsed_us,
+		achieved_rate_kbps_ref < 0 && (achieved_rate_kbps_ref=0),
+		previous_bytes_ref=current_bytes,
+		previous_time_us_ref=now_us
+	))
+}
+
 get_process_start_time()
 {
 	local pid=${1}

@@ -262,6 +262,29 @@ test_bytes_counter_validation()
 	ok "byte counter validation"
 }
 
+test_transient_counter_read_keeps_time_anchor()
+{
+	local tmp counter previous_bytes=0 previous_time_us=0 initialized=0 rate=0
+
+	tmp=$(make_tmp_dir)
+	counter="${tmp}/rx_bytes"
+	printf '%s\n' 100 > "${counter}"
+	assert_success "first counter sample anchors without a rate" update_achieved_rate "${counter}" 1000000 1000000 previous_bytes previous_time_us initialized rate
+	assert_eq 0 "${rate}" "first counter sample rate"
+
+	printf '%s\n' invalid > "${counter}"
+	assert_failure "transient invalid counter read reported" update_achieved_rate "${counter}" 2000000 1000000 previous_bytes previous_time_us initialized rate
+	assert_eq 0 "${rate}" "failed counter sample rate"
+	assert_eq 1000000 "${previous_time_us}" "failed counter sample preserves timestamp"
+	assert_eq 100 "${previous_bytes}" "failed counter sample preserves byte anchor"
+
+	printf '%s\n' 200100 > "${counter}"
+	assert_success "counter recovers after transient read" update_achieved_rate "${counter}" 3000000 1000000 previous_bytes previous_time_us initialized rate
+	assert_eq 800 "${rate}" "recovered rate spans the full elapsed interval"
+
+	ok "transient counter read timestamp"
+}
+
 test_atomic_proc_metadata_with_fake_proc()
 {
 	local tmp fake_proc observed
@@ -1066,6 +1089,7 @@ test_bash_requirement
 test_pinger_field_validation
 test_controller_clock_domains
 test_bytes_counter_validation
+test_transient_counter_read_keeps_time_anchor
 test_atomic_proc_metadata_with_fake_proc
 test_startup_lock_kernel_semantics
 test_startup_lock_concurrency_and_sigkill_release
