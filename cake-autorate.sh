@@ -810,9 +810,9 @@ sleep_until_next_pinger_time_slot()
 
 	local pinger=${1}
 
-	t_start_us=${EPOCHREALTIME/.}
+	t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
 	(( time_to_next_time_slot_us = (reflector_ping_interval_us-(t_start_us-pingers_t_start_us)%reflector_ping_interval_us) + pinger*ping_response_interval_us ))
-	sleep_remaining_tick_time "${t_start_us}" "${time_to_next_time_slot_us}"
+	sleep_remaining_tick_time_monotonic "${t_start_us}" "${time_to_next_time_slot_us}"
 }
 
 kill_pinger()
@@ -1593,7 +1593,7 @@ then
 	sleep_us "${startup_wait_us}"
 fi
 
-t_start_us=${EPOCHREALTIME/.} \
+t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
 t_last_cpu_usage_check_us=${t_start_us} \
 t_last_bufferbloat_us[dl]=${t_start_us} t_last_bufferbloat_us[ul]=${t_start_us} \
 t_last_decay_us[dl]=${t_start_us} t_last_decay_us[ul]=${t_start_us} \
@@ -1627,7 +1627,7 @@ do
 	command=()
 	reflector_response=0
 	read -r -t 1 -u "${main_fd}" -a command || :
-	t_start_us=${EPOCHREALTIME/.}
+	t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
 	if (( t_start_us > t_last_worker_supervision_us + 1000000 ))
 	then
 		supervise_workers || request_fatal_exit 1
@@ -1719,13 +1719,14 @@ do
 			continue
 		fi
 
-		if ! pinger_timestamp_is_fresh "${timestamp_us}" "${t_start_us}"
+		wallclock_time_us=${EPOCHREALTIME/.}
+		if ! pinger_timestamp_is_fresh "${timestamp_us}" "${wallclock_time_us}"
 		then
 			log_msg "DEBUG" "processed response from [${reflector}] with a stale or future timestamp: ${timestamp}. Skipping."
 			continue
 		fi
 
-		last_timestamp_reflectors_us[${reflector}]=${timestamp_us} reflectors_last_timestamp_us=${timestamp_us}
+		last_timestamp_reflectors_us[${reflector}]=${t_start_us} reflectors_last_timestamp_us=${t_start_us}
 	fi
 
 	case ${main_state} in

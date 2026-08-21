@@ -207,6 +207,29 @@ test_pinger_field_validation()
 	ok "pinger field validation"
 }
 
+test_controller_clock_domains()
+{
+	local tmp monotonic_now wallclock_now saved_proc_root
+
+	tmp=$(make_tmp_dir)
+	mkdir -p "${tmp}/proc"
+	printf '123.45 67.89\n' > "${tmp}/proc/uptime"
+	saved_proc_root=${CAKE_AUTORATE_PROC_ROOT}
+	CAKE_AUTORATE_PROC_ROOT="${tmp}/proc"
+	monotonic_now=$(monotonic_time_us)
+	assert_eq 123450000 "${monotonic_now}" "controller monotonic timestamp"
+
+	wallclock_now=200000000
+	assert_success "pinger freshness uses wallclock domain" pinger_timestamp_is_fresh 199900000 "${wallclock_now}"
+	assert_failure "epoch pinger timestamp is not comparable to uptime" pinger_timestamp_is_fresh 199900000 "${monotonic_now}"
+	grep -Fq 'pinger_timestamp_is_fresh "${timestamp_us}" "${wallclock_time_us}"' "${repo_dir}/cake-autorate.sh" || fail "pinger freshness is not kept on wallclock"
+	grep -Fq 'last_timestamp_reflectors_us[${reflector}]=${t_start_us}' "${repo_dir}/cake-autorate.sh" || fail "reflector controller timestamp is not monotonic"
+	grep -Fq 'log_timestamp=${EPOCHREALTIME}' "${repo_dir}/cake-autorate.sh" || fail "log timestamps no longer use wallclock"
+	CAKE_AUTORATE_PROC_ROOT=${saved_proc_root}
+
+	ok "controller and log clock domains"
+}
+
 test_bytes_counter_validation()
 {
 	local tmp counter value
@@ -977,6 +1000,7 @@ test_numeric_validation
 test_runtime_requires_flock
 test_bash_requirement
 test_pinger_field_validation
+test_controller_clock_domains
 test_bytes_counter_validation
 test_atomic_proc_metadata_with_fake_proc
 test_startup_lock_kernel_semantics
