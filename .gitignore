@@ -10,3 +10,4 @@ output.*.*
 [a-z].sh
 [a-z][a-z].sh
 [a-z][a-z][a-z].sh
+!/lib.sh
