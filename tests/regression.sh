@@ -768,7 +768,7 @@ EOF
 	ok "set_shaper_rate with fake tc"
 }
 
-test_negative_cake_overhead()
+test_cake_framing_and_overhead()
 {
 	local tmp fake_bin expected observed saved_path
 
@@ -789,12 +789,18 @@ EOF
 	assert_success "negative CAKE overhead accepted" get_max_wire_packet_size_bits lo observed
 	assert_eq "${expected}" "${observed}" "negative CAKE overhead compensation"
 
+	FAKE_TC_QDISC_OUTPUT='qdisc cake ca1e: root raw overhead 0 mpu 64'
+	export FAKE_TC_QDISC_OUTPUT
+	expected=$((8 * $(< /sys/class/net/lo/mtu)))
+	assert_success "raw CAKE framing accepted" get_max_wire_packet_size_bits lo observed
+	assert_eq "${expected}" "${observed}" "raw CAKE overhead compensation"
+
 	FAKE_TC_QDISC_OUTPUT='qdisc cake 1: root raw'
 	export FAKE_TC_QDISC_OUTPUT
 	assert_failure "missing CAKE overhead rejected" get_max_wire_packet_size_bits lo observed
 	PATH=${saved_path}
 
-	ok "negative CAKE overhead"
+	ok "CAKE framing and signed overhead"
 }
 
 test_log_export_suffix_and_marker()
@@ -1163,7 +1169,7 @@ test_stopped_pinger_metadata_is_cleared
 test_worker_supervision_detects_exit
 test_ping_worker_identity_and_group_cleanup
 test_set_shaper_rate_with_fake_tc
-test_negative_cake_overhead
+test_cake_framing_and_overhead
 test_log_export_suffix_and_marker
 test_install_lifecycle_safety
 test_installer_uses_canonical_source

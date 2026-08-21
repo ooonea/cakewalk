@@ -1030,9 +1030,9 @@ get_max_wire_packet_size_bits()
 		log_msg "ERROR" "Unable to read the qdisc configuration on ${interface}."
 		return 1
 	fi
-	[[ ${qdisc_output} =~ (atm|noatm)[[:space:]]overhead[[:space:]](-?[0-9]+) ]] || { log_msg "ERROR" "Unable to determine CAKE framing and overhead on ${interface}."; return 1; }
-	framing=${BASH_REMATCH[1]}
-	overhead=${BASH_REMATCH[2]}
+	[[ ${qdisc_output} =~ (^|[[:space:]])(atm|noatm|raw)[[:space:]]+overhead[[:space:]]+(-?[0-9]+)($|[[:space:]]) ]] || { log_msg "ERROR" "Unable to determine CAKE framing and overhead on ${interface}."; return 1; }
+	framing=${BASH_REMATCH[2]}
+	overhead=${BASH_REMATCH[3]}
 	(( max_wire_packet_size_bits=8*(mtu+overhead) ))
 	# atm compensation = 53*ceil(X/48) bytes = 8*53*((X+8*(48-1)/(8*48)) bits = 424*((X+376)/384) bits
 	if [[ ${framing} == "atm" ]]
