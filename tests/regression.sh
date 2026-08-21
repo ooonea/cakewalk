@@ -170,23 +170,18 @@ test_bash_requirement()
 	ok "Bash 5 requirement"
 }
 
-test_setup_tmp_handoff_guard()
+test_setup_tmp_lifecycle()
 {
-	local tmp unsafe_target create_line cleanup_line download_line
+	local create_line cleanup_line download_line
 
-	tmp=$(make_tmp_dir)
-	unsafe_target="${tmp}/must-survive"
-	: > "${unsafe_target}"
-	eval "$(awk '/^setup_tmp_is_safe\(\)/,/^\}/' "${repo_dir}/setup.sh")"
-	assert_failure "installer rejects ambient temporary path" setup_tmp_is_safe "${tmp}"
-	assert_failure "installer rejects broad temporary path" setup_tmp_is_safe /tmp
-	[[ -f "${unsafe_target}" ]] || fail "handoff guard touched an external target"
 	create_line=$(awk '/tmp=\$\(mktemp -d \/tmp\/cake-autorate-setup\.XXXXXXXXXX\)/ { print NR; exit }' "${repo_dir}/setup.sh")
 	cleanup_line=$(awk -v start="${create_line}" 'NR > start && /trap .*rm -rf/ { print NR; exit }' "${repo_dir}/setup.sh")
 	download_line=$(awk -v start="${create_line}" 'NR > start && /download_url/ { print NR; exit }' "${repo_dir}/setup.sh")
 	[[ -n ${create_line} && -n ${cleanup_line} && -n ${download_line} && ${create_line} -lt ${cleanup_line} && ${cleanup_line} -lt ${download_line} ]] || fail "installer does not arm temporary cleanup before download"
+	! grep -Eq '__CAKE_AUTORATE_SETUP_SH_EXEC|cake-autorate-setup-tmp|SUPPORT_SELF_REPLACING|setup_tmp_is_safe' "${repo_dir}/setup.sh" || fail "installer still trusts self-replacement handoff state"
+	grep -Fq 'CAKE_AUTORATE_COMMIT="${commit}" sh "${tmp}/setup.sh"' "${repo_dir}/setup.sh" || fail "installer does not keep downloaded setup under parent cleanup"
 
-	ok "installer temporary handoff guard"
+	ok "installer temporary lifecycle"
 }
 
 test_project_version_metadata()
@@ -1441,7 +1436,7 @@ EOF
 test_numeric_validation
 test_runtime_requires_flock
 test_bash_requirement
-test_setup_tmp_handoff_guard
+test_setup_tmp_lifecycle
 test_project_version_metadata
 test_pinger_field_validation
 test_controller_clock_domains

@@ -1,8 +1,5 @@
 #!/bin/sh
 
-# Capabilities:
-#   - CAKE_AUTORATE_SETUP_SH_SUPPORT_SELF_REPLACING
-
 # Installation script for cake-autorate
 #
 # See https://codeberg.org/ooonea/cakewalk for more details
@@ -39,18 +36,6 @@ instance_is_running()
 	done
 
 	return 1
-}
-
-setup_tmp_is_safe()
-{
-	tmp=${1}
-	case "${tmp}" in
-		/tmp/cake-autorate-setup.??????????) ;;
-		*) return 1 ;;
-	esac
-	[ -d "${tmp}" ] && [ ! -L "${tmp}" ] || return 1
-	[ -f "${tmp}/.cake-autorate-setup-tmp" ] || return 1
-	[ "$(cat "${tmp}/.cake-autorate-setup-tmp" 2>/dev/null)" = cake-autorate-setup-tmp ] || return 1
 }
 
 # This needs to be encapsulated into a function so that we are sure that
@@ -166,10 +151,7 @@ main() {
 	mkdir -p "${SCRIPT_PREFIX}" "${CONFIG_PREFIX}"
 
 	# Resolve an exact commit unless the caller supplied a reviewed pin.
-	if [ -n "${__CAKE_AUTORATE_SETUP_SH_EXEC_COMMIT:-}" ]
-	then
-		commit="${__CAKE_AUTORATE_SETUP_SH_EXEC_COMMIT}"
-	elif [ -n "${CAKE_AUTORATE_COMMIT:-}" ]
+	if [ -n "${CAKE_AUTORATE_COMMIT:-}" ]
 	then
 		commit="${CAKE_AUTORATE_COMMIT}"
 	else
@@ -209,63 +191,38 @@ main() {
 	printf "Installing cake-autorate using %s (script) and %s (config) directories...\n" "${SCRIPT_PREFIX}" "${CONFIG_PREFIX}"
 
 	# Download the selected commit and strip the archive's one top-level directory.
-	if [ -z "${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP:-}" ]
-	then
-		tmp=$(mktemp -d /tmp/cake-autorate-setup.XXXXXXXXXX)
-		trap 'rm -rf "${tmp}"' EXIT INT TERM
-		archive="${tmp}/archive.tar.gz"
-		download_url "${SRC_DIR}/${commit}.tar.gz" > "${archive}"
-		tar -xozf "${archive}" -C "${tmp}"
-		rm -f "${archive}"
-		archive_root=
-		for candidate in "${tmp}"/*
-		do
-			[ -d "${candidate}" ] || continue
-			archive_root="${candidate}"
-			break
-		done
-		[ -n "${archive_root}" ] || {
-			printf >&2 "Downloaded archive has no top-level directory\n"
-			exit 1
-		}
-		mv "${archive_root}"/* "${tmp}"
-		for hidden in "${archive_root}"/.[!.]* "${archive_root}"/..?*
-		do
-			[ -e "${hidden}" ] || continue
-			mv "${hidden}" "${tmp}"
-		done
-		rmdir "${archive_root}"
-		printf '%s\n' cake-autorate-setup-tmp > "${tmp}/.cake-autorate-setup-tmp"
-		chmod 600 "${tmp}/.cake-autorate-setup-tmp"
-	else
-		tmp="${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP}"
-		# shellcheck disable=SC2310  # rejection is handled explicitly below
-		if ! setup_tmp_is_safe "${tmp}"
-		then
-			printf >&2 'Invalid self-replacement temporary directory\n'
-			exit 1
-		fi
-		trap 'rm -rf "${tmp}"' EXIT INT TERM
-	fi
+	tmp=$(mktemp -d /tmp/cake-autorate-setup.XXXXXXXXXX)
+	trap 'rm -rf "${tmp}"' EXIT INT TERM
+	archive="${tmp}/archive.tar.gz"
+	download_url "${SRC_DIR}/${commit}.tar.gz" > "${archive}"
+	tar -xozf "${archive}" -C "${tmp}"
+	rm -f "${archive}"
+	archive_root=
+	for candidate in "${tmp}"/*
+	do
+		[ -d "${candidate}" ] || continue
+		archive_root="${candidate}"
+		break
+	done
+	[ -n "${archive_root}" ] || {
+		printf >&2 "Downloaded archive has no top-level directory\n"
+		exit 1
+	}
+	mv "${archive_root}"/* "${tmp}"
+	for hidden in "${archive_root}"/.[!.]* "${archive_root}"/..?*
+	do
+		[ -e "${hidden}" ] || continue
+		mv "${hidden}" "${tmp}"
+	done
+	rmdir "${archive_root}"
 
 	# Compare local setup.sh with the one from the repository
 	if [ -e "${tmp}/setup.sh" ] && [ -e "${0}" ] && ! cmp -s "${0}" "${tmp}/setup.sh"
 	then
 		printf "Local setup.sh differs from the one in the repository\n"
-		if grep -q ' CAKE_AUTORATE_SETUP_SH_SUPPORT_SELF_REPLACING$' "${tmp}/setup.sh"
-		then
-			printf "Self-replacing setup.sh and restarting while preserving the current environment...\n"
-			trap - EXIT INT TERM
-			__CAKE_AUTORATE_SETUP_SH_EXEC_TMP="${tmp}" \
-			__CAKE_AUTORATE_SETUP_SH_EXEC_COMMIT="${commit}" \
-				exec "${tmp}/setup.sh" "${REPOSITORY}" "${BRANCH}"
-		else
-			printf "Self-replacing not fully supported. Running the downloaded setup.sh as a child...\n"
-			sh "${tmp}/setup.sh" "${REPOSITORY}" "${BRANCH}"
-			exit "${?}"
-		fi
-
-		exit "${?}"  # should not reach this point
+		printf "Running the downloaded setup.sh as a child...\n"
+		CAKE_AUTORATE_COMMIT="${commit}" sh "${tmp}/setup.sh" "${REPOSITORY}" "${BRANCH}"
+		exit "${?}"
 	fi
 
 	# Migrate old configuration (and new file) files if present
