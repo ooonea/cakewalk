@@ -765,9 +765,17 @@ start_pinger()
 			;;
 		ping)
 			sleep_until_next_pinger_time_slot "${pinger}"
-			${ping_prefix_string} ping ${ping_extra_args} -n -D -i "${reflector_ping_interval_s}" "${reflectors[pinger]}" 2> /dev/null >&"${main_fd}" &
-			pinger_pids["${pinger}"]=${!}
-			proc_pids["ping_${pinger}_pinger"]=${!}
+			# shellcheck disable=SC2155  # the subshell status (echo $!) is intentionally unused
+			local pinger_pid=$( (
+				set -m
+				(
+					${ping_prefix_string} ping ${ping_extra_args} -n -D -i "${reflector_ping_interval_s}" "${reflectors[pinger]}" 2>/dev/null |
+						prefix_ping_reply_identity "${pinger}" "${reflectors[pinger]}"
+				) >&"${main_fd}" &
+				echo $!
+			) )
+			pinger_pids["${pinger}"]=-${pinger_pid}
+			proc_pids["ping_${pinger}_pinger"]=${pinger_pid}
 			;;
 		*)
 			log_msg "ERROR" "Unknown pinger method: ${pinger_method}"
@@ -776,6 +784,16 @@ start_pinger()
 	esac
 
 	export_proc_pids || { log_msg "ERROR" "Failed to export process metadata. Exiting script."; exit 1; }
+}
+
+prefix_ping_reply_identity()
+{
+	local pinger=${1} reflector=${2} line
+
+	while IFS= read -r line
+	do
+		printf 'PING %s %s %s\n' "${pinger}" "${reflector}" "${line}"
+	done
 }
 
 start_pingers()
@@ -1698,9 +1716,9 @@ do
 					fi
 					;;
 				ping)
-					if valid_ping_reply_fields command
+					if valid_tagged_ping_reply_fields command reflectors
 					then
-						timestamp=${command[0]} reflector=${command[4]} seq=${command[5]} rtt_ms=${command[7]#time=} reflector_response=1
+						timestamp=${command[3]} reflector=${command[2]} seq=${command[8]} rtt_ms=${command[10]#time=} reflector_response=1
 					fi
 					;;
 				*)

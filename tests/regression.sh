@@ -104,6 +104,9 @@ eval "$(extract_function cleanup_and_killall)"
 eval "$(extract_function kill_pinger)"
 eval "$(extract_function stop_pingers)"
 eval "$(extract_function supervise_workers)"
+eval "$(extract_function prefix_ping_reply_identity)"
+eval "$(extract_function sleep_until_next_pinger_time_slot)"
+eval "$(extract_function start_pinger)"
 eval "$(extract_function get_max_wire_packet_size_bits)"
 eval "$(extract_function export_log_file)"
 eval "$(extract_function instance_is_running "${repo_dir}/uninstall.sh")"
@@ -172,6 +175,14 @@ test_pinger_field_validation()
 	IFS=" ," read -r -a command <<< "[123.456789] 64 bytes from 1.1.1.1: icmp_seq=7 ttl=55 time=12.345 ms"
 	assert_success "valid ping reply accepted" valid_ping_reply_fields command
 	assert_eq 123456789 "$(normalise_pinger_timestamp_us ping "${command[0]}")" "ping timestamp normalised"
+	reflectors=(reflector.example 9.9.9.9)
+	IFS=" ," read -r -a command <<< "PING 0 reflector.example [123.456789] 64 bytes from 192.0.2.1: icmp_seq=7 ttl=55 time=12.345 ms"
+	assert_success "tagged hostname ping reply accepted" valid_tagged_ping_reply_fields command reflectors
+	reflectors[0]=rotated.example
+	assert_failure "reply from rotated-out ping worker rejected" valid_tagged_ping_reply_fields command reflectors
+	IFS=" ," read -r -a command <<< "PING 0 rotated.example [123.456789] 64 bytes from 192.0.2.2: icmp_seq=8 ttl=55 time=12.345 ms"
+	assert_success "rotated hostname retains canonical identity" valid_tagged_ping_reply_fields command reflectors
+	assert_eq 'PING 0 rotated.example [123.456789] 64 bytes from 192.0.2.2: icmp_seq=8 ttl=55 time=12.345 ms' "$(printf '%s\n' '[123.456789] 64 bytes from 192.0.2.2: icmp_seq=8 ttl=55 time=12.345 ms' | prefix_ping_reply_identity 0 rotated.example)" "ping identity prefix"
 
 	IFS=" ," read -r -a command <<< "[123.456789] From 1.1.1.1 icmp_seq=7 Destination Host Unreachable"
 	assert_failure "ping error line rejected" valid_ping_reply_fields command
@@ -567,6 +578,59 @@ test_worker_supervision_detects_exit()
 	grep -Fq 'read -r -t 1 -u "${main_fd}" -a command' "${repo_dir}/cake-autorate.sh" || fail "main FIFO read is not bounded for supervision"
 
 	ok "worker death supervision"
+}
+
+test_ping_worker_identity_and_group_cleanup()
+{
+	local tmp fake_bin original_path tagged fake_ping_pid test_main_fd
+
+	tmp=$(make_tmp_dir)
+	fake_bin="${tmp}/bin"
+	mkdir "${fake_bin}" "${tmp}/run"
+	cat > "${fake_bin}/ping" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" > "${FAKE_PING_PID_FILE}"
+printf '%s\n' '[123.456789] 64 bytes from 192.0.2.1: icmp_seq=7 ttl=55 time=12.345 ms'
+trap 'exit 0' TERM
+while :
+do
+	sleep 1
+done
+EOF
+	chmod +x "${fake_bin}/ping"
+
+	original_path=${PATH}
+	PATH="${fake_bin}:${PATH}"
+	FAKE_PING_PID_FILE="${tmp}/ping.pid"
+	export PATH FAKE_PING_PID_FILE
+	exec {test_main_fd}<> <(:)
+	main_fd=${test_main_fd}
+	run_path="${tmp}/run"
+	CAKE_AUTORATE_RUN_TOKEN=11111111-2222-3333-4444-555555555555
+	export CAKE_AUTORATE_RUN_TOKEN
+	declare -gA proc_pids pinger_pids
+	proc_pids=([main]=${BASHPID})
+	pinger_pids=()
+	pinger_method=ping
+	reflectors=(reflector.example)
+	ping_prefix_string=
+	ping_extra_args=
+	reflector_ping_interval_s=0.1
+	reflector_ping_interval_us=100000
+	ping_response_interval_us=100000
+	pingers_t_start_us=$(monotonic_time_us)
+
+	assert_success "tagged ping worker starts" start_pinger 0
+	read -r -t 2 -u "${main_fd}" tagged || fail "tagged ping worker produced no reply"
+	assert_eq 'PING 0 reflector.example [123.456789] 64 bytes from 192.0.2.1: icmp_seq=7 ttl=55 time=12.345 ms' "${tagged}" "tagged ping worker output"
+	read -r fake_ping_pid < "${FAKE_PING_PID_FILE}"
+	assert_success "tagged ping worker stops" kill_pinger 0
+	! kill -0 "${fake_ping_pid}" 2>/dev/null || fail "ping process survived group cleanup"
+	exec {main_fd}>&-
+	PATH=${original_path}
+	export PATH
+
+	ok "ping worker identity and group cleanup"
 }
 
 test_set_shaper_rate_with_fake_tc()
@@ -1010,6 +1074,7 @@ test_runtime_path_safety
 test_operational_bounds
 test_stopped_pinger_metadata_is_cleared
 test_worker_supervision_detects_exit
+test_ping_worker_identity_and_group_cleanup
 test_set_shaper_rate_with_fake_tc
 test_negative_cake_overhead
 test_log_export_suffix_and_marker

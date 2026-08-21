@@ -183,6 +183,23 @@ valid_ping_reply_fields()
 		is_nonnegative_decimal "${fields[7]#time=}"
 }
 
+valid_tagged_ping_reply_fields()
+{
+	local -n fields=${1} active_reflectors=${2}
+	local pinger_index=${fields[1]:-}
+	local reply_fields=()
+
+	((${#fields[@]} == 12)) &&
+		[[ ${fields[0]} == PING ]] &&
+		is_unsigned_integer "${pinger_index}" &&
+		(( 10#${pinger_index} < ${#active_reflectors[@]} )) &&
+		[[ ${fields[2]} == "${active_reflectors[10#${pinger_index}]}" ]] || return 1
+
+	# shellcheck disable=SC2034  # read through the valid_ping_reply_fields nameref
+	reply_fields=("${fields[@]:3}")
+	valid_ping_reply_fields reply_fields
+}
+
 validate_bytes_path()
 {
 	local name=${1} path=${2}
