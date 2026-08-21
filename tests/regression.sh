@@ -258,6 +258,8 @@ test_controller_clock_domains()
 	CAKE_AUTORATE_PROC_ROOT="${tmp}/proc"
 	monotonic_now=$(monotonic_time_us)
 	assert_eq 123450000 "${monotonic_now}" "controller monotonic timestamp"
+	monotonic_time_us monotonic_now
+	assert_eq 123450000 "${monotonic_now}" "controller monotonic timestamp by reference"
 
 	wallclock_now=200000000
 	assert_success "pinger freshness uses wallclock domain" pinger_timestamp_is_fresh 199900000 "${wallclock_now}"

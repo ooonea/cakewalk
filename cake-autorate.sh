@@ -637,13 +637,13 @@ monitor_achieved_rates()
 	declare -A achieved_rate_kbps load_percent
 	# shellcheck disable=SC2034  # state is passed by name to update_achieved_rate
 	prev_rx_bytes=0 prev_tx_bytes=0 prev_rx_time_us=0 prev_tx_time_us=0 rx_initialized=0 tx_initialized=0
-	t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
+	monotonic_time_us t_start_us || t_start_us=${EPOCHREALTIME/.}
 	update_achieved_rate "${rx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_rx_bytes prev_rx_time_us rx_initialized 'achieved_rate_kbps[dl]' || :
 	update_achieved_rate "${tx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_tx_bytes prev_tx_time_us tx_initialized 'achieved_rate_kbps[ul]' || :
 
 	while :
 	do
-		t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
+		monotonic_time_us t_start_us || t_start_us=${EPOCHREALTIME/.}
 		update_achieved_rate "${rx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_rx_bytes prev_rx_time_us rx_initialized 'achieved_rate_kbps[dl]' || :
 		update_achieved_rate "${tx_bytes_path}" "${t_start_us}" "${compensated_monitor_achieved_rates_interval_us}" prev_tx_bytes prev_tx_time_us tx_initialized 'achieved_rate_kbps[ul]' || :
 
@@ -809,7 +809,7 @@ sleep_until_next_pinger_time_slot()
 
 	local pinger=${1}
 
-	t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
+	monotonic_time_us t_start_us || t_start_us=${EPOCHREALTIME/.}
 	(( time_to_next_time_slot_us = (reflector_ping_interval_us-(t_start_us-pingers_t_start_us)%reflector_ping_interval_us) + pinger*ping_response_interval_us ))
 	sleep_remaining_tick_time_monotonic "${t_start_us}" "${time_to_next_time_slot_us}"
 }
@@ -1596,7 +1596,7 @@ then
 	sleep_us "${startup_wait_us}"
 fi
 
-t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
+monotonic_time_us t_start_us || t_start_us=${EPOCHREALTIME/.}
 t_last_cpu_usage_check_us=${t_start_us} \
 t_last_bufferbloat_us[dl]=${t_start_us} t_last_bufferbloat_us[ul]=${t_start_us} \
 t_last_decay_us[dl]=${t_start_us} t_last_decay_us[ul]=${t_start_us} \
@@ -1630,7 +1630,7 @@ do
 	command=()
 	reflector_response=0
 	read -r -t 1 -u "${main_fd}" -a command || :
-	t_start_us=$(monotonic_time_us) || t_start_us=${EPOCHREALTIME/.}
+	monotonic_time_us t_start_us || t_start_us=${EPOCHREALTIME/.}
 	if (( t_start_us > t_last_worker_supervision_us + 1000000 ))
 	then
 		supervise_workers || request_fatal_exit 1

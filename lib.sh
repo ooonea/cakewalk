@@ -31,14 +31,14 @@ is_nonnegative_decimal()
 
 timestamp_value_to_us()
 {
-	local timestamp=${1} seconds fraction
+	local source_timestamp=${1} seconds fraction
 
-	if [[ ${timestamp} == *.* ]]
+	if [[ ${source_timestamp} == *.* ]]
 	then
-		seconds=${timestamp%%.*}
-		fraction=${timestamp#*.}
+		seconds=${source_timestamp%%.*}
+		fraction=${source_timestamp#*.}
 	else
-		seconds=${timestamp}
+		seconds=${source_timestamp}
 		fraction=
 	fi
 
@@ -51,19 +51,35 @@ timestamp_value_to_us()
 		fraction+="0"
 	done
 
-	printf '%s%s\n' "${seconds}" "${fraction}"
+	if (($# > 1))
+	then
+		local -n converted_us_ref=${2}
+		# shellcheck disable=SC2034  # assignment is returned through the nameref
+		converted_us_ref=${seconds}${fraction}
+	else
+		printf '%s%s\n' "${seconds}" "${fraction}"
+	fi
 }
 
 monotonic_time_us()
 {
-	local uptime _
+	local uptime _ monotonic_timestamp
 
 	if [[ -r ${CAKE_AUTORATE_PROC_ROOT}/uptime ]] && read -r uptime _ < "${CAKE_AUTORATE_PROC_ROOT}/uptime"
 	then
-		timestamp_value_to_us "${uptime}" && return
+		timestamp_value_to_us "${uptime}" monotonic_timestamp || return
+	else
+		timestamp_value_to_us "${EPOCHREALTIME}" monotonic_timestamp || return
 	fi
 
-	timestamp_value_to_us "${EPOCHREALTIME}"
+	if (($#))
+	then
+		local -n monotonic_result_ref=${1}
+		# shellcheck disable=SC2034  # assignment is returned through the nameref
+		monotonic_result_ref=${monotonic_timestamp}
+	else
+		printf '%s\n' "${monotonic_timestamp}"
+	fi
 }
 
 sleep_remaining_tick_time_monotonic()
@@ -76,7 +92,7 @@ sleep_remaining_tick_time_monotonic()
 
 	local now_us
 
-	now_us=$(monotonic_time_us) || now_us=${EPOCHREALTIME/.}
+	monotonic_time_us now_us || now_us=${EPOCHREALTIME/.}
 
 	((
 		sleep_duration_us=${1} + ${2} - now_us,
@@ -355,23 +371,6 @@ sleep_us()
 	# ${1} = sleep_duration_us (microseconds)
 
 	printf -v sleep_duration_s %.1f "${1}e-6"
-	read -r -t "${sleep_duration_s}" -u "${__sleep_fd}" || :
-}
-
-sleep_remaining_tick_time()
-{
-	# sleeps until the end of the tick duration
-
-	# ${1} = t_start_us (microseconds)
-	# ${2} = tick_duration_us (microseconds)
-
-	# shellcheck disable=SC2154
-	((
-		sleep_duration_us=${1} + ${2} - ${EPOCHREALTIME/.},
-		sleep_duration_us < 0 && (sleep_duration_us=0)
-	))
-
-	printf -v sleep_duration_s %.1f "${sleep_duration_us}e-6"
 	read -r -t "${sleep_duration_s}" -u "${__sleep_fd}" || :
 }
 
