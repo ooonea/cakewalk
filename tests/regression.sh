@@ -9,9 +9,11 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 . "${repo_dir}/lib.sh"
 
 tmp_root=$(mktemp -d)
+regression_pid=${BASHPID}
 
 cleanup_tmp_dirs()
 {
+	[[ ${BASHPID} == "${regression_pid}" ]] || return
 	rm -rf "${tmp_root}"
 }
 
