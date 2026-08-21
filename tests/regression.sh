@@ -103,6 +103,7 @@ eval "$(extract_function validate_operational_bounds)"
 eval "$(extract_function cleanup_and_killall)"
 eval "$(extract_function kill_pinger)"
 eval "$(extract_function stop_pingers)"
+eval "$(extract_function get_max_wire_packet_size_bits)"
 
 write_fake_stat()
 {
@@ -522,7 +523,7 @@ test_stopped_pinger_metadata_is_cleared()
 
 test_set_shaper_rate_with_fake_tc()
 {
-	local tmp fake_bin tc_log status
+	local tmp fake_bin tc_log status saved_path
 
 	tmp=$(make_tmp_dir)
 
@@ -552,6 +553,7 @@ exit 99
 EOF
 	chmod +x "${fake_bin}/tc"
 
+	saved_path=${PATH}
 	PATH="${fake_bin}:${PATH}"
 	FAKE_TC_LOG=${tc_log}
 	FAKE_TC_KIND=cake_mq
@@ -614,8 +616,38 @@ EOF
 	shaper_rate_kbps[dl]=30000
 	assert_success "next controller rate is applied" set_shaper_rate dl
 	assert_eq 30000 "${last_shaper_rate_kbps[dl]}" "last shaper updated after recovery"
+	PATH=${saved_path}
 
 	ok "set_shaper_rate with fake tc"
+}
+
+test_negative_cake_overhead()
+{
+	local tmp fake_bin expected observed saved_path
+
+	tmp=$(make_tmp_dir)
+	fake_bin="${tmp}/bin"
+	mkdir "${fake_bin}"
+	cat > "${fake_bin}/tc" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_TC_QDISC_OUTPUT}"
+EOF
+	chmod +x "${fake_bin}/tc"
+
+	saved_path=${PATH}
+	PATH="${fake_bin}:${PATH}"
+	FAKE_TC_QDISC_OUTPUT='qdisc cake 1: root noatm overhead -8'
+	export PATH FAKE_TC_QDISC_OUTPUT
+	expected=$((8 * ($(< /sys/class/net/lo/mtu) - 8)))
+	assert_success "negative CAKE overhead accepted" get_max_wire_packet_size_bits lo observed
+	assert_eq "${expected}" "${observed}" "negative CAKE overhead compensation"
+
+	FAKE_TC_QDISC_OUTPUT='qdisc cake 1: root raw'
+	export FAKE_TC_QDISC_OUTPUT
+	assert_failure "missing CAKE overhead rejected" get_max_wire_packet_size_bits lo observed
+	PATH=${saved_path}
+
+	ok "negative CAKE overhead"
 }
 
 test_terminate_reaps_child()
@@ -771,6 +803,7 @@ test_runtime_path_safety
 test_operational_bounds
 test_stopped_pinger_metadata_is_cleared
 test_set_shaper_rate_with_fake_tc
+test_negative_cake_overhead
 test_terminate_reaps_child
 test_launcher_fail_fast
 test_launcher_child_success

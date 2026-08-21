@@ -989,14 +989,28 @@ get_root_qdisc_kind()
 
 get_max_wire_packet_size_bits()
 {
-	local interface=${1}
+	local interface=${1} mtu qdisc_output framing overhead
 	local -n max_wire_packet_size_bits=${2}
 
-	read -r max_wire_packet_size_bits < "/sys/class/net/${interface:?}/mtu"
-	[[ $(tc qdisc show dev "${interface}") =~ (atm|noatm)[[:space:]]overhead[[:space:]]([0-9]+) ]]
-	(( max_wire_packet_size_bits=8*(max_wire_packet_size_bits+BASH_REMATCH[2]) ))
+	if ! read -r mtu < "/sys/class/net/${interface:?}/mtu" || [[ ! ${mtu} =~ ^[0-9]+$ ]]
+	then
+		log_msg "ERROR" "Unable to read the MTU for ${interface}."
+		return 1
+	fi
+	if ! qdisc_output=$(tc qdisc show dev "${interface}")
+	then
+		log_msg "ERROR" "Unable to read the qdisc configuration on ${interface}."
+		return 1
+	fi
+	[[ ${qdisc_output} =~ (atm|noatm)[[:space:]]overhead[[:space:]](-?[0-9]+) ]] || { log_msg "ERROR" "Unable to determine CAKE framing and overhead on ${interface}."; return 1; }
+	framing=${BASH_REMATCH[1]}
+	overhead=${BASH_REMATCH[2]}
+	(( max_wire_packet_size_bits=8*(mtu+overhead) ))
 	# atm compensation = 53*ceil(X/48) bytes = 8*53*((X+8*(48-1)/(8*48)) bits = 424*((X+376)/384) bits
-	[[ ${BASH_REMATCH[1]:-} == "atm" ]] && (( max_wire_packet_size_bits=424*((max_wire_packet_size_bits+376)/384) ))
+	if [[ ${framing} == "atm" ]]
+	then
+		(( max_wire_packet_size_bits=424*((max_wire_packet_size_bits+376)/384) ))
+	fi
 }
 
 verify_ifs_up()
@@ -1477,8 +1491,8 @@ then
 	log_msg "DEBUG" "adjust_ul_shaper_rate=0 -- ul is monitor-only; load_percent[ul] is referenced to base_ul_shaper_rate_kbps (${base_ul_shaper_rate_kbps}), which should match the fixed upload CAKE bandwidth on ${ul_if}."
 fi
 
-get_max_wire_packet_size_bits "${dl_if}" dl_max_wire_packet_size_bits
-get_max_wire_packet_size_bits "${ul_if}" ul_max_wire_packet_size_bits
+get_max_wire_packet_size_bits "${dl_if}" dl_max_wire_packet_size_bits || exit 1
+get_max_wire_packet_size_bits "${ul_if}" ul_max_wire_packet_size_bits || exit 1
 
 if ((adjust_shaper_rate[dl]))
 then
