@@ -5,7 +5,7 @@
 
 # Installation script for cake-autorate
 #
-# See https://github.com/lynxthecat/cake-autorate for more details
+# See https://codeberg.org/ooonea/cakewalk for more details
 
 # Tries curl first, then falls back to wget.
 # This is so that users can specify proxy settings via
@@ -53,12 +53,13 @@ main() {
 	# Setup dependencies to check for
 	DEPENDENCIES="jsonfilter tar grep cmp mktemp bash flock"
 
-	# Set up remote locations and branch
-	BRANCH="${CAKE_AUTORATE_BRANCH:-${2-master}}"
-	REPOSITORY="${CAKE_AUTORATE_REPO:-${1-lynxthecat/cake-autorate}}"
-	SRC_DIR="https://codeload.github.com/${REPOSITORY}/tar.gz"
-	API_URL="https://api.github.com/repos/${REPOSITORY}/commits/${BRANCH}"
-	DOC_URL="https://github.com/${REPOSITORY}/tree/${BRANCH}#installation-on-openwrt"
+	# Set up remote locations and branch. The repository override remains useful
+	# for testing another compatible Codeberg repository.
+	BRANCH="${CAKE_AUTORATE_BRANCH:-${2-main}}"
+	REPOSITORY="${CAKE_AUTORATE_REPO:-${1-ooonea/cakewalk}}"
+	SRC_DIR="https://codeberg.org/${REPOSITORY}/archive"
+	API_URL="https://codeberg.org/api/v1/repos/${REPOSITORY}/branches/${BRANCH}"
+	DOC_URL="https://codeberg.org/${REPOSITORY}/src/branch/${BRANCH}/INSTALLATION.md"
 
 	# Set SCRIPT_PREFIX and CONFIG_PREFIX
 	SCRIPT_PREFIX=${CAKE_AUTORATE_SCRIPT_PREFIX:-}
@@ -106,6 +107,7 @@ main() {
 	# A flock backing file may legitimately keep this parent directory present
 	# after an instance exits. Block installation only for an actual recorded
 	# main process, never because a stale runtime directory merely exists.
+	# shellcheck disable=SC2310  # the predicate's status is the condition
 	if instance_is_running /var/run/cake-autorate /proc
 	then
 		printf "At least one instance of cake-autorate appears to be running - exiting\n" >&2
@@ -151,13 +153,31 @@ main() {
 	# Create the cake-autorate directory if it does not exist
 	mkdir -p "${SCRIPT_PREFIX}" "${CONFIG_PREFIX}"
 
-	# Get the latest commit to download
-	[ -z "${__CAKE_AUTORATE_SETUP_SH_EXEC_COMMIT:-}" ] && \
-		commit=$(download_url "${API_URL}" | jsonfilter -e @.sha) || \
+	# Resolve an exact commit unless the caller supplied a reviewed pin.
+	if [ -n "${__CAKE_AUTORATE_SETUP_SH_EXEC_COMMIT:-}" ]
+	then
 		commit="${__CAKE_AUTORATE_SETUP_SH_EXEC_COMMIT}"
+	elif [ -n "${CAKE_AUTORATE_COMMIT:-}" ]
+	then
+		commit="${CAKE_AUTORATE_COMMIT}"
+	else
+		commit=$(download_url "${API_URL}" | jsonfilter -e @.commit.id)
+	fi
 	if [ -z "${commit:-}" ];
 	then
-		printf >&2 "Invalid operation occurred, commit variable should not be empty"
+		printf >&2 "Unable to resolve a commit for %s:%s\n" "${REPOSITORY}" "${BRANCH}"
+		exit 1
+	fi
+	case "${commit}" in
+		*[!0-9a-fA-F]*)
+			printf >&2 "Resolved commit is not a hexadecimal SHA-1: %s\n" "${commit}"
+			exit 1
+			;;
+		*) ;;
+	esac
+	if [ "${#commit}" -ne 40 ]
+	then
+		printf >&2 "Resolved commit is not a 40-character SHA-1: %s\n" "${commit}"
 		exit 1
 	fi
 
@@ -176,12 +196,32 @@ main() {
 
 	printf "Installing cake-autorate using %s (script) and %s (config) directories...\n" "${SCRIPT_PREFIX}" "${CONFIG_PREFIX}"
 
-	# Download the files of the latest version of cake-autorate to a temporary directory, so we can move them to the cake-autorate directory
+	# Download the selected commit and strip the archive's one top-level directory.
 	if [ -z "${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP:-}" ]
 	then
 		tmp=$(mktemp -d)
-		download_url "${SRC_DIR}/${commit}" | tar -xozf - -C "${tmp}"
-		mv "${tmp}/cake-autorate-"*/* "${tmp}"
+		archive="${tmp}/archive.tar.gz"
+		download_url "${SRC_DIR}/${commit}.tar.gz" > "${archive}"
+		tar -xozf "${archive}" -C "${tmp}"
+		rm -f "${archive}"
+		archive_root=
+		for candidate in "${tmp}"/*
+		do
+			[ -d "${candidate}" ] || continue
+			archive_root="${candidate}"
+			break
+		done
+		[ -n "${archive_root}" ] || {
+			printf >&2 "Downloaded archive has no top-level directory\n"
+			exit 1
+		}
+		mv "${archive_root}"/* "${tmp}"
+		for hidden in "${archive_root}"/.[!.]* "${archive_root}"/..?*
+		do
+			[ -e "${hidden}" ] || continue
+			mv "${hidden}" "${tmp}"
+		done
+		rmdir "${archive_root}"
 	else
 		tmp="${__CAKE_AUTORATE_SETUP_SH_EXEC_TMP}"
 	fi

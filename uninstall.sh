@@ -2,7 +2,7 @@
 
 # Uninstall script for cake-autorate
 #
-# See https://github.com/lynxthecat/cake-autorate for more details
+# See https://codeberg.org/ooonea/cakewalk for more details
 
 # This needs to be encapsulated into a function so that we are sure that
 # sh reads all the contents of the shell file before we potentially erase it.
@@ -86,6 +86,7 @@ main() {
 	fi
 	# Do not remove service files while a recorded main process is still live.
 	# A lock-only runtime parent is expected and does not block uninstall.
+	# shellcheck disable=SC2310  # the predicate's status is the condition
 	if instance_is_running /var/run/cake-autorate /proc
 	then
 		printf "At least one instance of cake-autorate appears to be running - exiting\n" >&2
