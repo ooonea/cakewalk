@@ -22,6 +22,25 @@ download_url() {
 	fi
 }
 
+instance_is_running()
+{
+	runtime_parent_path=${1}
+	proc_root=${2}
+
+	for proc_pids_path in "${runtime_parent_path}"/*/proc_pids
+	do
+		[ -f "${proc_pids_path}" ] || continue
+		main_pid=$(sed -n 's/^main=\([0-9][0-9]*\)$/\1/p' "${proc_pids_path}" | sed -n '1p')
+		[ -n "${main_pid}" ] && [ -d "${proc_root}/${main_pid}" ] || continue
+		main_starttime=$(sed -n 's/^main_starttime=\([0-9][0-9]*\)$/\1/p' "${proc_pids_path}" | sed -n '1p')
+		[ -n "${main_starttime}" ] || return 0
+		current_starttime=$(awk '{ stat_line=$0; sub(/^[^)]*\) /, "", stat_line); split(stat_line, fields, " "); print fields[20]; exit }' "${proc_root}/${main_pid}/stat" 2>/dev/null) || return 0
+		[ "${current_starttime}" = "${main_starttime}" ] && return 0
+	done
+
+	return 1
+}
+
 # This needs to be encapsulated into a function so that we are sure that
 # sh reads all the contents of the shell file before we potentially erase it.
 #
@@ -87,29 +106,7 @@ main() {
 	# A flock backing file may legitimately keep this parent directory present
 	# after an instance exits. Block installation only for an actual recorded
 	# main process, never because a stale runtime directory merely exists.
-	running_instance=0
-	for proc_pids_path in /var/run/cake-autorate/*/proc_pids
-	do
-		[ -f "${proc_pids_path}" ] || continue
-		main_pid=$(grep '^main=' "${proc_pids_path}" | cut -d= -f2)
-		main_starttime=$(grep '^main_starttime=' "${proc_pids_path}" | cut -d= -f2)
-		case "${main_pid}" in
-			''|*[!0-9]*) ;;
-			*)
-				if [ -d "/proc/${main_pid}" ]
-				then
-					case "${main_starttime}" in
-						''|*[!0-9]*) running_instance=1 ;;
-						*)
-							current_starttime=$(awk '{ stat_line=$0; sub(/^[^)]*\\) /, "", stat_line); split(stat_line, fields, " "); print fields[20]; exit }' "/proc/${main_pid}/stat" 2>/dev/null)
-							[ "${current_starttime}" = "${main_starttime}" ] && running_instance=1
-							;;
-					esac
-				fi
-				;;
-		esac
-	done
-	if [ "${running_instance}" -eq 1 ]
+	if instance_is_running /var/run/cake-autorate /proc
 	then
 		printf "At least one instance of cake-autorate appears to be running - exiting\n" >&2
 		printf "If you want to install a new version, first stop any running instance of cake-autorate\n" >&2
@@ -202,9 +199,9 @@ main() {
 			__CAKE_AUTORATE_SETUP_SH_EXEC_COMMIT="${commit}" \
 				exec "${tmp}/setup.sh" "${REPOSITORY}" "${BRANCH}"
 		else
-			printf "Self-replacing not fully supported. Restarting with the new setup.sh...\n"
-			rm -rf "${tmp}"
-			exec "${tmp}/setup.sh" "${REPOSITORY}" "${BRANCH}"
+			printf "Self-replacing not fully supported. Running the downloaded setup.sh as a child...\n"
+			sh "${tmp}/setup.sh" "${REPOSITORY}" "${BRANCH}"
+			exit "${?}"
 		fi
 
 		exit "${?}"  # should not reach this point

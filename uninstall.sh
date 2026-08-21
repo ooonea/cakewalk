@@ -9,6 +9,25 @@
 #
 # Otherwise the read operation might fail and it won't be able to proceed with
 # the script as expected.
+instance_is_running()
+{
+	runtime_parent_path=${1}
+	proc_root=${2}
+
+	for proc_pids_path in "${runtime_parent_path}"/*/proc_pids
+	do
+		[ -f "${proc_pids_path}" ] || continue
+		main_pid=$(sed -n 's/^main=\([0-9][0-9]*\)$/\1/p' "${proc_pids_path}" | sed -n '1p')
+		[ -n "${main_pid}" ] && [ -d "${proc_root}/${main_pid}" ] || continue
+		main_starttime=$(sed -n 's/^main_starttime=\([0-9][0-9]*\)$/\1/p' "${proc_pids_path}" | sed -n '1p')
+		[ -n "${main_starttime}" ] || return 0
+		current_starttime=$(awk '{ stat_line=$0; sub(/^[^)]*\) /, "", stat_line); split(stat_line, fields, " "); print fields[20]; exit }' "${proc_root}/${main_pid}/stat" 2>/dev/null) || return 0
+		[ "${current_starttime}" = "${main_starttime}" ] && return 0
+	done
+
+	return 1
+}
+
 main() {
 	# Set correctness options
 	set -eu
@@ -56,7 +75,7 @@ main() {
 		return 1
 	fi
 
-	# Stop cake-autorate before continueing
+	# Stop cake-autorate before continuing.
 	if [ -x /etc/init.d/cake-autorate ]
 	then
 		/etc/init.d/cake-autorate stop || :
@@ -65,51 +84,56 @@ main() {
 	then
 		/etc/init.d/mqtt-publisher stop || :
 	fi
-	rm -f /etc/init.d/cake-autorate /etc/rc.d/*cake-autorate
-	rm -f /etc/init.d/mqtt-publisher /etc/rc.d/*mqtt-publisher
-
-	# Check if an instance of cake-autorate is already running and exit if so
-	if [ -d /var/run/cake-autorate ]
+	# Do not remove service files while a recorded main process is still live.
+	# A lock-only runtime parent is expected and does not block uninstall.
+	if instance_is_running /var/run/cake-autorate /proc
 	then
 		printf "At least one instance of cake-autorate appears to be running - exiting\n" >&2
 		printf "If you want to uninstall a cake-autorate, first stop any running instance of cake-autorate\n" >&2
-		printf "If you are sure that no instance of cake-autorate is running, delete the /var/run/cake-autorate directory\n" >&2
-		exit 1
+		return 1
 	fi
+	rm -f /etc/init.d/cake-autorate /etc/rc.d/*cake-autorate
+	rm -f /etc/init.d/mqtt-publisher /etc/rc.d/*mqtt-publisher
 
 	# remove configuration files if user does not want to keep them
-	cd "${CONFIG_PREFIX}"
 	keepIt=''
-	for file in *config.*.sh*
-	do
-		[ -e "${file}" ] || continue   # handle case where there are no old config files
-		if [ -z "${keepIt:-}" ]
-	        then
-	                printf "Would you like to keep your configs? [Y/n]"
-	                read -r keepIt
-	                [ -z "${keepIt:-}" ] && keepIt=Y
-	        fi
-
-		if [ "${keepIt}" = "N" ] || [ "${keepIt}" = "n" ]; then
-			rm -f "${file}"
-	        fi
-	done
+	if [ -d "${CONFIG_PREFIX}" ]
+	then
+		cd "${CONFIG_PREFIX}"
+		for file in *config.*.sh*
+		do
+			[ -e "${file}" ] || continue
+			if [ -z "${keepIt:-}" ]
+			then
+				printf "Would you like to keep your configs? [Y/n]"
+				read -r keepIt
+				[ -z "${keepIt:-}" ] && keepIt=Y
+			fi
+			if [ "${keepIt}" = "N" ] || [ "${keepIt}" = "n" ]
+			then
+				rm -f "${file}"
+			fi
+		done
+	fi
 
 	# remove old program files from cake-autorate directory
-	cd "${SCRIPT_PREFIX}"
-	old_fnames="cake-autorate.sh cake-autorate_defaults.sh cake-autorate_launcher.sh cake-autorate_lib.sh cake-autorate_setup.sh"
-	for file in ${old_fnames}
-	do
-		rm -f "${file}"
-	done
+	if [ -d "${SCRIPT_PREFIX}" ]
+	then
+		cd "${SCRIPT_PREFIX}"
+		old_fnames="cake-autorate.sh cake-autorate_defaults.sh cake-autorate_launcher.sh cake-autorate_lib.sh cake-autorate_setup.sh"
+		for file in ${old_fnames}
+		do
+			rm -f "${file}"
+		done
 
-	# remove current program files from the cake-autorate directory
-	cd "${SCRIPT_PREFIX}"
-	files="cake-autorate.sh defaults.sh launcher.sh lib.sh mqtt-publisher.sh setup.sh uninstall.sh"
-	for file in ${files}
-	do
-		rm -f "${file}"
-	done
+		# remove current program files from the cake-autorate directory
+		files="cake-autorate.sh defaults.sh launcher.sh lib.sh mqtt-publisher.sh setup.sh uninstall.sh version.txt"
+		for file in ${files}
+		do
+			rm -f "${file}"
+		done
+	fi
+	rm -rf /var/run/cake-autorate
 
 	# remove ${SCRIPT_PREFIX} and ${CONFIG_PREFIX} directories if empty
 	rmdir "${SCRIPT_PREFIX}" "${CONFIG_PREFIX}" 2>/dev/null || :

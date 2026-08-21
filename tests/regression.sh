@@ -61,7 +61,7 @@ assert_failure()
 
 extract_function()
 {
-	local function_name=${1}
+	local function_name=${1} source_file=${2:-${repo_dir}/cake-autorate.sh}
 
 	awk -v function_name="${function_name}" '
 		$0 == function_name "()" {
@@ -84,7 +84,7 @@ extract_function()
 				exit
 			}
 		}
-	' "${repo_dir}/cake-autorate.sh"
+	' "${source_file}"
 }
 
 log_msg()
@@ -105,6 +105,7 @@ eval "$(extract_function kill_pinger)"
 eval "$(extract_function stop_pingers)"
 eval "$(extract_function get_max_wire_packet_size_bits)"
 eval "$(extract_function export_log_file)"
+eval "$(extract_function instance_is_running "${repo_dir}/uninstall.sh")"
 
 write_fake_stat()
 {
@@ -672,6 +673,49 @@ test_log_export_suffix_and_marker()
 	ok "log export suffix and atomic marker"
 }
 
+test_install_lifecycle_safety()
+{
+	local tmp fake_proc run_path stop_line check_line removal_line setup_detector uninstall_detector
+
+	tmp=$(make_tmp_dir)
+	fake_proc="${tmp}/proc"
+	run_path="${tmp}/run/primary"
+	mkdir -p "${run_path}"
+	write_fake_stat "${fake_proc}" 123 123123
+	printf 'main=123\nmain_starttime=123123\n' > "${run_path}/proc_pids"
+	assert_success "matching recorded main process detected" instance_is_running "${tmp}/run" "${fake_proc}"
+
+	printf 'main=123\nmain_starttime=999999\n' > "${run_path}/proc_pids"
+	assert_failure "reused pid with different start time ignored" instance_is_running "${tmp}/run" "${fake_proc}"
+	printf 'main=123\n' > "${run_path}/proc_pids"
+	assert_success "live pid with missing start time handled conservatively" instance_is_running "${tmp}/run" "${fake_proc}"
+	rm -f "${run_path}/proc_pids"
+	: > "${tmp}/run/primary.startup.lock"
+	assert_failure "lock-only runtime parent ignored" instance_is_running "${tmp}/run" "${fake_proc}"
+
+	stop_line=$(awk '/cake-autorate stop/{ print NR; exit }' "${repo_dir}/uninstall.sh")
+	check_line=$(awk '/if instance_is_running \/var\/run\/cake-autorate \/proc/{ print NR; exit }' "${repo_dir}/uninstall.sh")
+	removal_line=$(awk '/rm -f \/etc\/init.d\/cake-autorate/{ print NR; exit }' "${repo_dir}/uninstall.sh")
+	[[ ${stop_line} -lt ${check_line} && ${check_line} -lt ${removal_line} ]] || fail "uninstall lifecycle ordering is unsafe"
+
+	setup_detector=$(extract_function instance_is_running "${repo_dir}/setup.sh")
+	uninstall_detector=$(extract_function instance_is_running "${repo_dir}/uninstall.sh")
+	assert_eq "${setup_detector}" "${uninstall_detector}" "setup and uninstall live-process detectors"
+	if awk '
+		/Running the downloaded setup.sh as a child/ { checking = 1; next }
+		checking && /rm -rf "\$\{tmp\}"/ { bad = 1; exit }
+		checking && /sh "\$\{tmp\}\/setup\.sh"/ { found = 1; exit }
+		END { exit !(found && !bad) }
+	' "${repo_dir}/setup.sh"
+	then
+		:
+	else
+		fail "setup fallback deletes or fails to run its downloaded target"
+	fi
+
+	ok "install lifecycle safety"
+}
+
 test_terminate_reaps_child()
 {
 	local child
@@ -827,6 +871,7 @@ test_stopped_pinger_metadata_is_cleared
 test_set_shaper_rate_with_fake_tc
 test_negative_cake_overhead
 test_log_export_suffix_and_marker
+test_install_lifecycle_safety
 test_terminate_reaps_child
 test_launcher_fail_fast
 test_launcher_child_success
