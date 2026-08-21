@@ -212,6 +212,7 @@ test_pinger_field_validation()
 	IFS=" ," read -r -a command <<< "PING 0 rotated.example [123.456789] 64 bytes from 192.0.2.2: icmp_seq=8 ttl=55 time=12.345 ms"
 	assert_success "rotated hostname retains canonical identity" valid_tagged_ping_reply_fields command reflectors
 	assert_eq 'PING 0 rotated.example [123.456789] 64 bytes from 192.0.2.2: icmp_seq=8 ttl=55 time=12.345 ms' "$(printf '%s\n' '[123.456789] 64 bytes from 192.0.2.2: icmp_seq=8 ttl=55 time=12.345 ms' | prefix_ping_reply_identity 0 rotated.example)" "ping identity prefix"
+	! grep -Fq 'reflector=${reflector%:}' "${repo_dir}/cake-autorate.sh" || fail "canonical ping reflector identity is rewritten"
 
 	IFS=" ," read -r -a command <<< "[123.456789] From 1.1.1.1 icmp_seq=7 Destination Host Unreachable"
 	assert_failure "ping error line rejected" valid_ping_reply_fields command

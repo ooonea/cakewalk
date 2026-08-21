@@ -1879,9 +1879,7 @@ do
 
 						;;
 					ping)
-						# Strip only the trailing colon (iputils ping -D "from <addr>:") -- //:/
-						# would mangle IPv6 keys.
-						reflector=${reflector%:} seq=${seq//icmp_seq=} rtt_ms=${rtt_ms//time=}
+						seq=${seq//icmp_seq=} rtt_ms=${rtt_ms//time=}
 
 						printf -v rtt_us %.3f "${rtt_ms}"
 
