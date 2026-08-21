@@ -194,7 +194,7 @@ test_project_version_metadata()
 	local version
 
 	version=$(sed -n 's/^cake_autorate_version="\([^"]*\)"$/\1/p' "${repo_dir}/cake-autorate.sh")
-	assert_eq 3.5.0-cakewalk.0 "${version}" "runtime development version"
+	assert_eq 3.5.0-cakewalk.1 "${version}" "runtime development version"
 	grep -Fq "<span id=\"version\">${version}</span>" "${repo_dir}/README.md" || fail "README version differs from runtime"
 	grep -Fq "Unreleased — Version ${version}" "${repo_dir}/CHANGELOG.md" || fail "changelog version differs from runtime"
 

@@ -15,7 +15,7 @@
 # Author and maintainer: lynxthecat
 # Contributors:  rany2; moeller0; richb-hanover
 
-cake_autorate_version="3.5.0-cakewalk.0"
+cake_autorate_version="3.5.0-cakewalk.1"
 
 if ((BASH_VERSINFO[0] < 5))
 then

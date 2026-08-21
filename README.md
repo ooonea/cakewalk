@@ -44,7 +44,7 @@ This is the **development** (`main`) branch. New work on cakewalk
 appears here; it is not guaranteed to be stable.
 
 The current development snapshot is
-<span id="version">3.5.0-cakewalk.0</span>. There is no stable
+<span id="version">3.5.0-cakewalk.1</span>. There is no stable
 cakewalk release yet; production installs should pin the exact Codeberg
 commit recorded by the installer in `version.txt`.
 
