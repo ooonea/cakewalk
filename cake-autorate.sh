@@ -391,11 +391,18 @@ generate_log_file_scripts()
 
 export_log_file()
 {
+	local log_file_export_marker_tmp
+
 	log_msg "DEBUG" "Starting: ${FUNCNAME[0]} with PID: ${BASHPID}"
 
 	printf -v log_file_export_datetime '%(%Y_%m_%d_%H_%M_%S)T'
-	log_file_export_path="${log_file_path/.log/_${log_file_export_datetime}.log}"
-	log_msg "DEBUG" "Exporting log file with path: ${log_file_path/.log/_${log_file_export_datetime}.log}"
+	if [[ ${log_file_path} == *.log ]]
+	then
+		log_file_export_path="${log_file_path%.log}_${log_file_export_datetime}.log"
+	else
+		log_file_export_path="${log_file_path}_${log_file_export_datetime}"
+	fi
+	log_msg "DEBUG" "Exporting log file with path: ${log_file_export_path}"
 
 	flush_log_pipe
 
@@ -415,7 +422,13 @@ export_log_file()
 	else
 		"${export_cmd[@]}" "${log_file_path}" > "${log_file_export_path}"
 	fi
-	printf '%s' "${log_file_export_path}" > "${run_path}/last_log_file_export"
+	log_file_export_marker_tmp="${run_path}/last_log_file_export.tmp.${BASHPID}"
+	if ! printf '%s\n' "${log_file_export_path}" > "${log_file_export_marker_tmp}"
+	then
+		rm -f "${log_file_export_marker_tmp}"
+		return 1
+	fi
+	mv -f "${log_file_export_marker_tmp}" "${run_path}/last_log_file_export"
 }
 
 flush_log_pipe()

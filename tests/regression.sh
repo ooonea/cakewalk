@@ -104,6 +104,7 @@ eval "$(extract_function cleanup_and_killall)"
 eval "$(extract_function kill_pinger)"
 eval "$(extract_function stop_pingers)"
 eval "$(extract_function get_max_wire_packet_size_bits)"
+eval "$(extract_function export_log_file)"
 
 write_fake_stat()
 {
@@ -650,6 +651,27 @@ EOF
 	ok "negative CAKE overhead"
 }
 
+test_log_export_suffix_and_marker()
+{
+	local tmp marker
+
+	tmp=$(make_tmp_dir)
+	mkdir -p "${tmp}/logs.with.log" "${tmp}/run"
+	log_file_path="${tmp}/logs.with.log/cake.log"
+	run_path="${tmp}/run"
+	log_file_export_compress=0
+	printf 'one log line\n' > "${log_file_path}"
+	flush_log_pipe() { :; }
+
+	assert_success "log export succeeds" export_log_file
+	read -r marker < "${run_path}/last_log_file_export"
+	[[ ${marker} =~ ^${tmp}/logs\.with\.log/cake_[0-9_]+\.log$ ]] || fail "log export suffix changed a directory component: ${marker}"
+	[[ -f ${marker} ]] || fail "log export marker names no file"
+	! compgen -G "${run_path}/last_log_file_export.tmp.*" >/dev/null || fail "temporary log export marker left behind"
+
+	ok "log export suffix and atomic marker"
+}
+
 test_terminate_reaps_child()
 {
 	local child
@@ -804,6 +826,7 @@ test_operational_bounds
 test_stopped_pinger_metadata_is_cleared
 test_set_shaper_rate_with_fake_tc
 test_negative_cake_overhead
+test_log_export_suffix_and_marker
 test_terminate_reaps_child
 test_launcher_fail_fast
 test_launcher_child_success
