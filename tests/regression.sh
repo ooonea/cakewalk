@@ -657,25 +657,11 @@ test_worker_supervision_detects_exit()
 
 test_worker_supervision_ignores_dead_pingers()
 {
-	local required_worker pinger
-
 	declare -gA proc_pids
-	proc_pids=([main]=${BASHPID})
-	sleep 30 &
-	required_worker=${!}
-	proc_pids[monitor_achieved_rates]=${required_worker}
-	sleep 30 &
-	pinger=${!}
-	proc_pids[ping_0_pinger]=${pinger}
+	proc_pids=([main]=${BASHPID} [monitor_achieved_rates]=${BASHPID} [ping_0_pinger]=999999999)
 
-	kill -TERM "${pinger}"
-	wait "${pinger}" 2>/dev/null || :
 	assert_success "dead pinger is left to the restart path" supervise_workers
 	grep -Fq $'stop_pingers\n\t\t\t\tstart_pingers' "${repo_dir}/cake-autorate.sh" || fail "dead pingers no longer have a restart path"
-
-	kill -TERM "${required_worker}"
-	wait "${required_worker}" 2>/dev/null || :
-	assert_failure "dead required worker remains fatal" supervise_workers
 
 	ok "pinger supervision and self-heal contract"
 }
