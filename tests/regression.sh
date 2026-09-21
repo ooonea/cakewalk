@@ -550,7 +550,6 @@ test_operational_bounds()
 	reflector_misbehaving_detection_window=60
 	reflector_misbehaving_detection_thr=3
 	log_to_file=1
-	log_file_buffer_size_B=512
 	log_file_buffer_timeout_ms=500
 	assert_success "default operational bounds accepted" validate_operational_bounds
 
@@ -572,11 +571,13 @@ test_operational_bounds()
 	assert_failure "oversized reflector threshold rejected" validate_operational_bounds
 	reflector_misbehaving_detection_thr=3
 
-	log_file_buffer_size_B=0
-	assert_failure "zero log buffer size rejected" validate_operational_bounds
-	log_file_buffer_size_B=512
 	log_file_buffer_timeout_ms=0
 	assert_failure "zero log buffer timeout rejected" validate_operational_bounds
+	log_file_buffer_timeout_ms=49
+	assert_failure "too short log buffer timeout rejected" validate_operational_bounds
+	log_file_buffer_timeout_ms=50
+	assert_success "minimum log buffer timeout accepted" validate_operational_bounds
+	log_file_buffer_timeout_ms=0
 	log_to_file=0
 	assert_success "unused zero log timeout accepted" validate_operational_bounds
 
@@ -896,16 +897,137 @@ EOF
 	ok "CAKE framing and signed overhead"
 }
 
+test_buffered_logger()
+(
+	local tmp collector timer attempt producer record payload
+	local -a producers=()
+	tmp=$(make_tmp_dir)
+	for function in maintain_log_file flush_log_pipe log_file_buffer_timer rotate_log_file reset_log_file
+	do
+		eval "$(extract_function "${function}")"
+	done
+	print_headers() { : > "${tmp}/ready"; }
+	log_file_path="${tmp}/test.log" run_path=${tmp}
+	log_file_buffer_timeout_s=0.050 log_file_max_time_s=3600
+	log_file_max_time_mins=60 log_file_max_size_bytes=20000 log_file_max_size_KB=20
+	log_file_export_compress=0
+	exec {log_fd}<> <(:)
+	(set +e; maintain_log_file) 2> "${tmp}/stderr" &
+	collector=${!}
+	declare -A proc_pids=([maintain_log_file]=${collector})
+	(set +e; log_file_buffer_timer) &
+	timer=${!}
+	trap 'terminate "${collector}" 500; terminate "${timer}" 500' EXIT
+
+	wait_for_log()
+	{
+		for ((attempt=0; attempt<200; attempt++))
+		do
+			cmp -s "${1}" "${2}" && return 0
+			sleep 0.01
+		done
+		fail "logger content mismatch: ${2}"
+	}
+	for ((attempt=0; attempt<200; attempt++))
+	do
+		[[ -f ${tmp}/ready ]] && break
+		sleep 0.01
+	done
+	[[ -f ${tmp}/ready ]] || fail "logger failed to start"
+	printf '  first\\record\nsecond\n' > "${tmp}/expected"
+	printf -v payload '%12000s' x
+	printf '%s\n' "${payload}" >> "${tmp}/expected"
+	cat "${tmp}/expected" >&"${log_fd}"
+	wait_for_log "${tmp}/expected" "${log_file_path}"
+
+	kill -USR1 "${collector}"
+	for ((attempt=0; attempt<200; attempt++))
+	do
+		[[ -f ${tmp}/last_log_file_export ]] && break
+		sleep 0.01
+	done
+	[[ -f ${tmp}/last_log_file_export ]] || fail "logger export did not complete"
+	wait_for_log "${tmp}/expected" "$(< "${tmp}/last_log_file_export")"
+	kill -USR2 "${collector}"
+	: > "${tmp}/empty"
+	wait_for_log "${tmp}/empty" "${log_file_path}"
+
+	: > "${tmp}/expected"
+	for ((producer=0; producer<4; producer++))
+	do
+		for ((record=0; record<20; record++))
+		do
+			printf '%s:%s\n' "${producer}" "${record}" >> "${tmp}/expected"
+		done
+		(
+			for ((record=0; record<20; record++))
+			do
+				printf '%s:%s\n' "${producer}" "${record}" >&"${log_fd}"
+			done
+		) &
+		producers+=("${!}")
+	done
+	wait "${producers[@]}"
+	for ((attempt=0; attempt<200; attempt++))
+	do
+		[[ $(wc -c < "${log_file_path}") == "$(wc -c < "${tmp}/expected")" ]] && break
+		sleep 0.01
+	done
+	sort "${tmp}/expected" > "${tmp}/sorted-expected"
+	sort "${log_file_path}" > "${tmp}/sorted-log"
+	wait_for_log "${tmp}/sorted-expected" "${tmp}/sorted-log"
+	cp "${log_file_path}" "${tmp}/expected"
+	printf -v payload '%21000s' y
+	printf '%s\n' "${payload}" >> "${tmp}/expected"
+	printf '%s\n' "${payload}" >&"${log_fd}"
+	wait_for_log "${tmp}/expected" "${log_file_path}.old"
+
+	kill -TERM "${timer}"
+	wait "${timer}"
+	printf 'partial\	ail' >&"${log_fd}"
+	printf 'partial\	ail' > "${tmp}/expected"
+	terminate "${collector}" 2000 "${log_fd}"
+	assert_success "logger stopped without SIGKILL" wait "${collector}"
+	trap - EXIT
+	wait_for_log "${tmp}/expected" "${log_file_path}"
+	[[ ! -s ${tmp}/stderr ]] || { cat "${tmp}/stderr" >&2; fail "logger emitted diagnostics"; }
+	exec {log_fd}>&-
+
+	eval "$(declare -f flush_log_pipe | sed '1s/flush_log_pipe/drain_log_pipe/')"
+	flush_log_pipe()
+	{
+		if ((interrupt_drain))
+		then
+			interrupt_drain=0
+			kill -TERM "${BASHPID}"
+		fi
+		drain_log_pipe
+	}
+	interrupt_drain=1 log_file_max_size_bytes=1
+	exec {log_fd}<> <(:)
+	printf 'rotate\n\0' >&"${log_fd}"
+	(set +e; maintain_log_file) 2> "${tmp}/stderr" &
+	collector=${!}
+	trap 'terminate "${collector}" 500' EXIT
+	for ((attempt=0; attempt<200; attempt++))
+	do
+		kill -0 "${collector}" 2>/dev/null || break
+		sleep 0.01
+	done
+	! kill -0 "${collector}" 2>/dev/null || fail "logger TERM during rotation drain hung"
+	wait "${collector}"
+	trap - EXIT
+	[[ ! -s ${tmp}/stderr ]] || { cat "${tmp}/stderr" >&2; fail "rotation drain emitted diagnostics"; }
+	exec {log_fd}>&-
+	ok "buffered logger bytes, export, reset, rotation and timerless shutdown"
+)
+
 test_log_timeout_millisecond_precision()
 {
 	local log_file_buffer_timeout_s
 
-	printf -v log_file_buffer_timeout_s %.3f '1e-3'
-	assert_eq 0.001 "${log_file_buffer_timeout_s}" "one millisecond logger timeout"
-	printf -v log_file_buffer_timeout_s %.3f '49e-3'
-	assert_eq 0.049 "${log_file_buffer_timeout_s}" "forty-nine millisecond logger timeout"
-	printf -v log_file_buffer_timeout_s %.3f '50e-3'
-	assert_eq 0.050 "${log_file_buffer_timeout_s}" "fifty millisecond logger timeout"
+	printf -v log_file_buffer_timeout_s %.3f '51e-3'
+	assert_eq 0.051 "${log_file_buffer_timeout_s}" "fifty-one millisecond logger timeout"
 	grep -Fq 'printf -v log_file_buffer_timeout_s %.3f "${log_file_buffer_timeout_ms}e-3"' "${repo_dir}/cake-autorate.sh" || fail "logger timeout conversion lost millisecond precision"
 
 	ok "logger timeout millisecond precision"
@@ -1483,6 +1605,7 @@ test_install_lifecycle_safety
 test_installer_uses_canonical_source
 test_installation_documentation_matches_runtime
 test_log_timeout_millisecond_precision
+test_buffered_logger
 test_mqtt_configuration_is_external
 test_sqm_setup_ownership
 test_sqm_setup_netns

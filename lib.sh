@@ -444,6 +444,8 @@ terminate()
 	# `--` is required: irtt pids are negated pgids, and kill would otherwise parse
 	# the leading `-` as a signal spec.
 	kill -TERM -- "${pids[@]}" 2> /dev/null
+	# A blocked log reader may defer its TERM trap until the next delimiter.
+	[[ -z ${3:-} ]] || printf '\0' >&"${3}"
 
 	for ((i=0; i<timeout_ms; i+=100))
 	do

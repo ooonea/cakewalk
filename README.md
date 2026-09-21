@@ -157,6 +157,11 @@ examining performance.
 
 Read about this in the [ANALYSIS](./ANALYSIS.md) page.
 
+File logging batches records once per `log_file_buffer_timeout_ms` interval
+(default 500 ms, minimum 50 ms), including under heavy logging. Rotation and
+export can wait for that interval. Remove any `log_file_buffer_size_B` override
+from existing configurations; buffering is now controlled by time alone.
+
 ## CPU usage monitoring
 
 The user should verify that total CPU usage is kept within acceptable
