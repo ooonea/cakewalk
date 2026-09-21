@@ -983,9 +983,13 @@ test_buffered_logger()
 	wait_for_log "${tmp}/expected" "${log_file_path}.old"
 
 	kill -TERM "${timer}"
-	wait "${timer}"
-	printf 'partial\	ail' >&"${log_fd}"
-	printf 'partial\	ail' > "${tmp}/expected"
+	printf 'after timer TERM\n' >&"${log_fd}"
+	printf 'after timer TERM\n' > "${tmp}/expected"
+	wait_for_log "${tmp}/expected" "${log_file_path}"
+	kill -KILL "${timer}"
+	wait "${timer}" 2>/dev/null || [[ ${?} == 137 ]]
+	printf '%s' 'partial\tail' >&"${log_fd}"
+	printf '%s' 'partial\tail' >> "${tmp}/expected"
 	terminate "${collector}" 2000 "${log_fd}"
 	assert_success "logger stopped without SIGKILL" wait "${collector}"
 	trap - EXIT

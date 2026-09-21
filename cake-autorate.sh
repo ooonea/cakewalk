@@ -471,7 +471,8 @@ flush_log_pipe()
 log_file_buffer_timer()
 {
 	trap '' INT
-	trap 'exit' TERM
+	# Group shutdown still needs delimiters until the collector has exited.
+	trap ':' TERM
 
 	while sleep_s "${log_file_buffer_timeout_s}"
 	do
