@@ -661,10 +661,46 @@ test_worker_supervision_ignores_dead_pingers()
 	proc_pids=([main]=${BASHPID} [monitor_achieved_rates]=${BASHPID} [ping_0_pinger]=999999999)
 
 	assert_success "dead pinger is left to the restart path" supervise_workers
-	grep -Fq $'stop_pingers\n\t\t\t\tstart_pingers' "${repo_dir}/cake-autorate.sh" || fail "dead pingers no longer have a restart path"
+	grep -Fq $'stop_pingers\n\t\tstart_pingers' "${repo_dir}/cake-autorate.sh" || fail "dead pingers no longer have a restart path"
 
 	ok "pinger supervision and self-heal contract"
 }
+
+test_global_ping_timeout()
+(
+	eval "$(extract_function start_pingers)"
+	eval "$(extract_function handle_global_ping_response_timeout)"
+	local tmp starts=0 stops=0 minimums=0 warnings=0
+	tmp=$(make_tmp_dir)
+	CAKE_AUTORATE_PROC_ROOT=${tmp}
+	printf '20.00 0.00\n' > "${tmp}/uptime"
+	start_pinger() { starts=$((starts+1)); }
+	stop_pingers() { stops=$((stops+1)); pingers_active=0; }
+	set_min_shaper_rates() { minimums=$((minimums+1)); }
+	log_msg() { [[ ${1} != SYSLOG ]] || warnings=$((warnings+1)); }
+	pinger_method=fping pingers_active=0
+	global_ping_response_timeout_us=10000000 global_ping_response_timeout_s=10
+	global_ping_response_timeout=0 min_shaper_rates_enforcement=1
+	reflectors_last_timestamp_us=0 t_last_start_pingers_us=0 t_start_us=20000000
+	handle_global_ping_response_timeout
+	assert_eq 1 "${starts}" "silent pinger restarted"
+	assert_eq 1 "${stops}" "old pinger stopped"
+	assert_eq 20000000 "${t_last_start_pingers_us}" "restart uses monotonic clock"
+	t_start_us=29999999
+	handle_global_ping_response_timeout
+	assert_eq 1 "${starts}" "new pinger gets a full response timeout"
+	printf '30.00 0.00\n' > "${tmp}/uptime"
+	t_start_us=30000000
+	handle_global_ping_response_timeout
+	assert_eq 2 "${starts}" "continued silence retried"
+	assert_eq 1 "${minimums}" "minimum rate enforced once per outage"
+	assert_eq 1 "${warnings}" "timeout warned once per outage"
+	reflectors_last_timestamp_us=39000000 t_start_us=40000000
+	handle_global_ping_response_timeout || :
+	assert_eq 2 "${starts}" "recent response prevents restart"
+
+	ok "global ping timeout and monotonic restart grace"
+)
 
 test_ping_worker_identity_and_group_cleanup()
 {
@@ -1438,6 +1474,7 @@ test_stopped_pinger_metadata_is_cleared
 test_pinger_keys_are_not_re_evaluated
 test_worker_supervision_detects_exit
 test_worker_supervision_ignores_dead_pingers
+test_global_ping_timeout
 test_ping_worker_identity_and_group_cleanup
 test_set_shaper_rate_with_fake_tc
 test_cake_framing_and_overhead

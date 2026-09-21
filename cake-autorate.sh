@@ -799,6 +799,7 @@ start_pingers()
 			;;
 	esac
 	pingers_active=1
+	monotonic_time_us t_last_start_pingers_us || t_last_start_pingers_us=${EPOCHREALTIME/.}
 }
 
 sleep_until_next_pinger_time_slot()
@@ -873,6 +874,25 @@ stop_pingers()
 	export_proc_pids || { log_msg "ERROR" "Failed to export process metadata after stopping pingers. Exiting script."; exit 1; }
 }
 
+
+handle_global_ping_response_timeout()
+{
+	(( t_start_us - reflectors_last_timestamp_us >= global_ping_response_timeout_us )) || return
+
+	if ((global_ping_response_timeout == 0))
+	then
+		global_ping_response_timeout=1
+		((min_shaper_rates_enforcement)) && set_min_shaper_rates
+		log_msg "SYSLOG" "Warning: Configured global ping response timeout: ${global_ping_response_timeout_s} seconds exceeded."
+	fi
+
+	if (( t_start_us - t_last_start_pingers_us >= global_ping_response_timeout_us ))
+	then
+		log_msg "DEBUG" "Restarting pingers."
+		stop_pingers
+		start_pingers
+	fi
+}
 
 replace_pinger_reflector()
 {
@@ -1580,7 +1600,7 @@ then
 	fi
 fi
 
-sustained_connection_idle=0 reflector_offences_idx=0 pingers_active=0
+sustained_connection_idle=0 reflector_offences_idx=0 pingers_active=0 global_ping_response_timeout=0
 
 monitor_achieved_rates "${rx_bytes_path}" "${tx_bytes_path}" "${monitor_achieved_rates_interval_us}" &
 proc_pids['monitor_achieved_rates']=${!}
@@ -1730,6 +1750,7 @@ do
 		fi
 
 		last_timestamp_reflectors_us[${reflector}]=${t_start_us} reflectors_last_timestamp_us=${t_start_us}
+		global_ping_response_timeout=0
 	fi
 
 	case ${main_state} in
@@ -2128,6 +2149,8 @@ do
 
 				log_msg "DEBUG" "load check is: (( ${achieved_rate_kbps[dl]} kbps > ${connection_stall_thr_kbps} kbps for download && ${achieved_rate_kbps[ul]} kbps > ${connection_stall_thr_kbps} kbps for upload ))"
 
+				handle_global_ping_response_timeout
+
 				# non-zero load so despite no reflector response within stall interval, the connection not considered to have stalled
 				# and therefore resume normal operation
 				if (( achieved_rate_kbps[dl] > connection_stall_thr_kbps && achieved_rate_kbps[ul] > connection_stall_thr_kbps ))
@@ -2136,8 +2159,6 @@ do
 					log_msg "DEBUG" "load above connection stall threshold so resuming normal operation."
 				else
 					change_state_main "STALL"
-
-					t_last_pinger_restart_us=${t_start_us}
 				fi
 
 			fi
@@ -2285,15 +2306,7 @@ do
 				change_state_main "RUNNING"
 			fi
 
-			if (( t_start_us > (t_last_pinger_restart_us + global_ping_response_timeout_us - stall_detection_timeout_us) ))
-			then
-				t_last_pinger_restart_us=${t_start_us}
-				((min_shaper_rates_enforcement)) && set_min_shaper_rates
-				log_msg "SYSLOG" "Warning: Configured global ping response timeout: ${global_ping_response_timeout_s} seconds exceeded."
-				log_msg "DEBUG" "Restarting pingers."
-				stop_pingers
-				start_pingers
-			fi
+			handle_global_ping_response_timeout
 			;;
 		*)
 			log_msg "ERROR" "Unrecognized main state: ${main_state}. Exiting now."
