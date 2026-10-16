@@ -290,8 +290,10 @@ get_process_start_time()
 	[[ ${pid} =~ ^[0-9]+$ && -r ${CAKE_AUTORATE_PROC_ROOT}/${pid}/stat ]] || return 1
 	awk '
 		{
-			stat_line = $0
-			sub(/^[^)]*\) /, "", stat_line)
+			stat_line = stat_line $0 ORS
+		}
+		END {
+			sub(/^.*\) /, "", stat_line)
 			split(stat_line, fields, " ")
 			if (fields[20] ~ /^[0-9]+$/) {
 				print fields[20]

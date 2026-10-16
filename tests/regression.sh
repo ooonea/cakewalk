@@ -115,10 +115,10 @@ eval "$(extract_function instance_is_running "${repo_dir}/uninstall.sh")"
 
 write_fake_stat()
 {
-	local proc_root=${1} pid=${2} start_time=${3}
+	local proc_root=${1} pid=${2} start_time=${3} comm=${4:-bash}
 
 	mkdir -p "${proc_root}/${pid}"
-	printf '%s (bash) S 1 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0\n' "${pid}" "${start_time}" > "${proc_root}/${pid}/stat"
+	printf '%s (%s) S 1 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0\n' "${pid}" "${comm}" "${start_time}" > "${proc_root}/${pid}/stat"
 }
 
 test_numeric_validation()
@@ -314,6 +314,28 @@ test_transient_counter_read_keeps_time_anchor()
 	assert_eq 800 "${rate}" "recovered rate spans the full elapsed interval"
 
 	ok "transient counter read timestamp"
+}
+
+test_process_start_time_comm()
+{
+	local tmp comm saved_proc_root=${CAKE_AUTORATE_PROC_ROOT}
+
+	tmp=$(make_tmp_dir)
+	CAKE_AUTORATE_PROC_ROOT=${tmp}/proc
+	mkdir "${tmp}/run"
+	: > "${tmp}/run/run_token"
+	printf 'main=123\nmain_starttime=123123\n' > "${tmp}/run/proc_pids"
+	for comm in bash 'worker) x' 'worker (x)' $'worker\nx' $'worker\n\nx' $'worker)\n) x'
+	do
+		write_fake_stat "${CAKE_AUTORATE_PROC_ROOT}" 123 123123 "${comm}"
+		assert_eq 123123 "$(get_process_start_time 123)" "start time with comm ${comm@Q}"
+		assert_eq 123 "$(get_running_main_pid_for_run_path "${tmp}/run")" "matching process identity"
+		write_fake_stat "${CAKE_AUTORATE_PROC_ROOT}" 123 456456 "${comm}"
+		assert_failure "stale process identity with comm ${comm@Q}" get_running_main_pid_for_run_path "${tmp}/run"
+	done
+	CAKE_AUTORATE_PROC_ROOT=${saved_proc_root}
+
+	ok "process start time with parentheses and newlines in comm"
 }
 
 test_atomic_proc_metadata_with_fake_proc()
@@ -1590,6 +1612,7 @@ test_pinger_field_validation
 test_controller_clock_domains
 test_bytes_counter_validation
 test_transient_counter_read_keeps_time_anchor
+test_process_start_time_comm
 test_atomic_proc_metadata_with_fake_proc
 test_startup_lock_kernel_semantics
 test_startup_lock_concurrency_and_sigkill_release
